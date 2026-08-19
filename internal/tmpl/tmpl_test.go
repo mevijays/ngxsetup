@@ -45,6 +45,7 @@ func TestAllTemplatesRender(t *testing.T) {
 		{"nginx/sites/phpmyadmin.conf.tmpl", PhpMyAdmin{
 			Port: 8443, AllowList: []string{"203.0.113.4"},
 			HtpasswdPath: "/etc/nginx/ngxsetup.htpasswd", SocketPath: "/run/php/tools.sock",
+			Root: "/var/www/ngxsetup-tools",
 		}},
 		{"php/pool.conf.tmpl", samplePool(plan)},
 		{"php/php.ini.tmpl", PHPIni{Plan: plan, SAPI: "fpm", Timezone: "UTC", OpcacheFileCache: "/var/cache/php/opcache"}},

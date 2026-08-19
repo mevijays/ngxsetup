@@ -228,12 +228,23 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/restore", mut(s.handleRestore))
 
 	mux.HandleFunc("GET /api/borg/status", s.handleBorgStatus)
+	mux.HandleFunc("POST /api/borg/ssh-key/generate", mut(s.handleBorgSSHKeyGenerate))
 	mux.HandleFunc("POST /api/borg/setup", mut(s.handleBorgSetup))
 	mux.HandleFunc("POST /api/borg/backup", mut(s.handleBorgBackup))
 	mux.HandleFunc("GET /api/borg/archives", s.handleBorgArchives)
 	mux.HandleFunc("DELETE /api/borg/archives", mut(s.handleBorgDeleteArchive))
 	mux.HandleFunc("POST /api/borg/restore", mut(s.handleBorgRestore))
 	mux.HandleFunc("POST /api/borg/schedule", mut(s.handleBorgSchedule))
+
+	mux.HandleFunc("GET /api/db-manage/databases", s.handleDBManageDatabases)
+	mux.HandleFunc("GET /api/db-manage/users", s.handleDBManageUsersList)
+	mux.HandleFunc("POST /api/db-manage/users", mut(s.handleDBManageUserCreate))
+	mux.HandleFunc("POST /api/db-manage/users/drop", mut(s.handleDBManageUserDrop))
+	mux.HandleFunc("POST /api/db-manage/grant", mut(s.handleDBManageGrant))
+	mux.HandleFunc("POST /api/db-manage/revoke", mut(s.handleDBManageRevoke))
+	mux.HandleFunc("GET /api/db-manage/databases/{db}/tables", s.handleDBManageTables)
+	mux.HandleFunc("GET /api/db-manage/databases/{db}/tables/{table}/rows", s.handleDBManageTableRows)
+	mux.HandleFunc("POST /api/db-manage/databases/{db}/tables/{table}/rows", mut(s.handleDBManageRowUpdate))
 
 	mux.HandleFunc("GET /api/config", s.handleConfigGet)
 	mux.HandleFunc("POST /api/config", mut(s.handleConfigSet))

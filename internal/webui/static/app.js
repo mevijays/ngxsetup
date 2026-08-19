@@ -1293,51 +1293,72 @@ views.backups = async (container) => {
   const sites = sitesResp.sites.filter((s) => s.db_name);
   container.innerHTML = `
     <h2 class="page-title">${icon('fa-database', 'text-indigo-500')}Backups</h2>
-    <div class="card">
-      <h3 class="card-title">${icon('fa-download')}Create a backup</h3>
-      <label class="field-label">Site</label>
-      <select id="backup-target" class="field-input max-w-sm">
-        <option value="">All sites</option>
-        ${sites.map((s) => `<option value="${escapeHTML(s.domain)}">${escapeHTML(s.domain)}</option>`).join('')}
-      </select>
-      <div class="mt-3"><button id="backup-run" class="btn btn-primary">${icon('fa-download')}Back up</button></div>
-      <div class="output-wrap hidden mt-3"><div class="output-panel"></div></div>
+    <div class="pane-tabs">
+      <button type="button" class="pane-tab active" data-tab="local">${icon('fa-hard-drive', 'mr-1')}Local Database Backup</button>
+      <button type="button" class="pane-tab" data-tab="borg">${icon('fa-cloud-arrow-up', 'mr-1')}Remote Backup (Borg)</button>
     </div>
-    <div class="card">
-      <h3 class="card-title">${icon('fa-clock-rotate-left')}Existing backups</h3>
-      <table class="data-table">
-        <thead><tr><th>File</th><th>Size</th><th>Modified (UTC)</th><th></th></tr></thead>
-        <tbody id="backups-tbody"></tbody>
-      </table>
-    </div>
-    <div class="card">
-      <h3 class="card-title">${icon('fa-upload')}Restore</h3>
-      <p class="text-xs text-slate-500 mb-3">Restoring overwrites the target database's current contents. A safety backup is taken first unless disabled.</p>
-      <form id="restore-form">
+
+    <div id="tab-local" class="tab-panel">
+      <div class="card">
+        <h3 class="card-title">${icon('fa-download')}Create a backup</h3>
         <label class="field-label">Site</label>
-        <select name="domain" required class="field-input max-w-sm">
-          <option value="" disabled selected>Choose a site</option>
+        <select id="backup-target" class="field-input max-w-sm">
+          <option value="">All sites</option>
           ${sites.map((s) => `<option value="${escapeHTML(s.domain)}">${escapeHTML(s.domain)}</option>`).join('')}
         </select>
-        <div class="mt-3"><label class="field-label">Source</label>
-          <select id="restore-source" class="field-input max-w-sm">
-            <option value="upload">Upload a .sql file</option>
-            <option value="existing">Use an existing backup</option>
+        <div class="mt-3"><button id="backup-run" class="btn btn-primary">${icon('fa-download')}Back up</button></div>
+        <div class="output-wrap hidden mt-3"><div class="output-panel"></div></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">${icon('fa-clock-rotate-left')}Existing backups</h3>
+        <table class="data-table">
+          <thead><tr><th>File</th><th>Size</th><th>Modified (UTC)</th><th></th></tr></thead>
+          <tbody id="backups-tbody"></tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3 class="card-title">${icon('fa-upload')}Restore</h3>
+        <p class="text-xs text-slate-500 mb-3">Restoring overwrites the target database's current contents. A safety backup is taken first unless disabled.</p>
+        <form id="restore-form">
+          <label class="field-label">Site</label>
+          <select name="domain" required class="field-input max-w-sm">
+            <option value="" disabled selected>Choose a site</option>
+            ${sites.map((s) => `<option value="${escapeHTML(s.domain)}">${escapeHTML(s.domain)}</option>`).join('')}
           </select>
-        </div>
-        <div id="restore-upload-field" class="mt-3"><label class="field-label">.sql file</label><input type="file" name="file" accept=".sql,.sql.gz,text/plain" class="field-input"></div>
-        <div id="restore-existing-field" class="hidden mt-3"><label class="field-label">Backup file</label>
-          <select name="existing_path" class="field-input">
-            ${(backupsResp.backups || []).map((b) => `<option value="${escapeHTML(b.path)}">${escapeHTML(b.name)} (${fmt(b.size_mb)} MB)</option>`).join('')}
-          </select>
-        </div>
-        <label class="field-checkbox-row"><input type="checkbox" name="no_safety_backup"> Skip the safety backup</label>
-        <button type="submit" class="btn btn-danger-solid mt-2">${icon('fa-triangle-exclamation')}Restore</button>
-      </form>
-      <div class="output-wrap hidden mt-3"><div class="output-panel"></div></div>
+          <div class="mt-3"><label class="field-label">Source</label>
+            <select id="restore-source" class="field-input max-w-sm">
+              <option value="upload">Upload a .sql file</option>
+              <option value="existing">Use an existing backup</option>
+            </select>
+          </div>
+          <div id="restore-upload-field" class="mt-3"><label class="field-label">.sql file</label><input type="file" name="file" accept=".sql,.sql.gz,text/plain" class="field-input"></div>
+          <div id="restore-existing-field" class="hidden mt-3"><label class="field-label">Backup file</label>
+            <select name="existing_path" class="field-input">
+              ${(backupsResp.backups || []).map((b) => `<option value="${escapeHTML(b.path)}">${escapeHTML(b.name)} (${fmt(b.size_mb)} MB)</option>`).join('')}
+            </select>
+          </div>
+          <label class="field-checkbox-row"><input type="checkbox" name="no_safety_backup"> Skip the safety backup</label>
+          <button type="submit" class="btn btn-danger-solid mt-2">${icon('fa-triangle-exclamation')}Restore</button>
+        </form>
+        <div class="output-wrap hidden mt-3"><div class="output-panel"></div></div>
+      </div>
     </div>
-    <h2 class="page-title mt-8">${icon('fa-cloud-arrow-up', 'text-indigo-500')}Remote Backup (Borg)</h2>
-    <div id="borg-section"></div>`;
+
+    <div id="tab-borg" class="tab-panel hidden">
+      <div id="borg-section"></div>
+    </div>`;
+
+  // Tab switching is deliberately plain show/hide, not a re-render — the
+  // Borg tab's own content (renderBorgSection) is fetched once, below, and
+  // switching tabs back and forth must not re-fetch or lose in-progress
+  // form input.
+  container.querySelectorAll('.pane-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.pane-tab').forEach((b) => b.classList.toggle('active', b === btn));
+      container.querySelectorAll('.tab-panel').forEach((p) => p.classList.add('hidden'));
+      container.querySelector(`#tab-${btn.dataset.tab}`).classList.remove('hidden');
+    });
+  });
 
   renderBackupsTable(container.querySelector('#backups-tbody'), backupsResp.backups);
   await renderBorgSection(container.querySelector('#borg-section'), sites);
@@ -1444,6 +1465,11 @@ async function renderBorgSection(container, sites) {
         ` : ''}
         ` : ''}
       </dl>
+      <div class="mt-3 pt-3 border-t border-slate-100">
+        <button id="borg-generate-key" class="btn ${status.ssh_public_key ? '' : 'btn-primary'}">${icon('fa-key')}${status.ssh_public_key ? 'View / re-generate SSH key' : 'Generate SSH key pair'}</button>
+        <p class="text-xs text-slate-500 mt-2">${icon('fa-circle-info', 'text-slate-400')}Generates a dedicated key for reaching a remote (ssh://) repository and applies it here immediately — no repository setup required first. Safe to click any time: an existing key is reused, never silently replaced. Copy the printed public key into ngxborg's <span class="font-mono">SSH Keys</span> page (or <span class="font-mono">user key add</span>) to register it there.</p>
+        <div id="borg-generate-key-wrap" class="output-wrap hidden mt-3"><div class="output-panel"></div></div>
+      </div>
     </div>
     ${status.configured && status.stats ? `
     <div class="card">
@@ -1553,6 +1579,30 @@ async function renderBorgSection(container, sites) {
     ` : ''}`;
 
   bindCopyButtons(container);
+
+  container.querySelector('#borg-generate-key').addEventListener('click', async () => {
+    const btn = container.querySelector('#borg-generate-key');
+    const outWrap = container.querySelector('#borg-generate-key-wrap');
+    const out = outWrap.querySelector('.output-panel');
+    btn.disabled = true; outWrap.classList.remove('hidden'); out.classList.remove('err');
+    out.textContent = 'Generating (or reusing) the dedicated SSH key…';
+    try {
+      const result = await api('POST', '/api/borg/ssh-key/generate', {});
+      let text = result.output || '(no output)';
+      toast(result.data && result.data.generated ? 'SSH key generated' : 'Existing SSH key reused', 'ok');
+      // Re-render so the Status card's own display (with its copy button)
+      // picks up the key immediately, the same reasoning the setup form's
+      // own submit handler already follows — see its comment below.
+      await renderBorgSection(container, sites);
+      const newOutWrap = container.querySelector('#borg-generate-key-wrap');
+      newOutWrap.classList.remove('hidden');
+      newOutWrap.querySelector('.output-panel').textContent = text;
+    } catch (err) {
+      out.classList.add('err');
+      out.textContent = ((err.data && err.data.output) ? err.data.output + '\n\n' : '') + 'Error: ' + err.message;
+      toast('Could not generate SSH key: ' + err.message, 'err');
+    } finally { btn.disabled = false; }
+  });
 
   container.querySelector('#borg-setup-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1845,6 +1895,309 @@ function renderBackupsTable(tbody, backups) {
   });
 }
 
+// ---- Database management ---------------------------------------------------------
+
+// views.dbmanage is a small self-contained app within the view: its own
+// tab state (Databases / Users) plus a drill-down path (database ->
+// tables -> one table's rows) that switches don't reset. Each level
+// re-fetches fresh on every draw() rather than caching, since a database
+// browser showing stale data — someone else's row edit not reflected — is
+// worse than one extra round trip.
+views.dbmanage = async (container) => {
+  let tab = 'databases'; // 'databases' | 'users'
+  let drillDB = null;
+  let drillTable = null;
+  let page = 1;
+
+  async function draw() {
+    container.innerHTML = `
+      <h2 class="page-title">${icon('fa-server', 'text-indigo-500')}Database</h2>
+      <div class="pane-tabs">
+        <button type="button" class="pane-tab ${tab === 'databases' ? 'active' : ''}" data-tab="databases">${icon('fa-database', 'mr-1')}Databases</button>
+        <button type="button" class="pane-tab ${tab === 'users' ? 'active' : ''}" data-tab="users">${icon('fa-users', 'mr-1')}Users &amp; Grants</button>
+      </div>
+      <div id="dbmanage-body"><p class="text-slate-400 text-sm">Loading…</p></div>`;
+
+    container.querySelectorAll('.pane-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        tab = btn.dataset.tab;
+        drillDB = null; drillTable = null; page = 1;
+        draw();
+      });
+    });
+
+    const body = container.querySelector('#dbmanage-body');
+    try {
+      if (tab === 'users') {
+        await drawUsers(body);
+      } else if (drillTable) {
+        await drawRows(body);
+      } else if (drillDB) {
+        await drawTables(body);
+      } else {
+        await drawDatabases(body);
+      }
+    } catch (err) {
+      body.innerHTML = `<div class="card"><p class="text-rose-600 text-sm">${escapeHTML(err.message)}</p></div>`;
+    }
+  }
+
+  // ---- Databases -> Tables -> Rows ----
+
+  async function drawDatabases(body) {
+    const dbs = (await api('GET', '/api/db-manage/databases')) || [];
+    body.innerHTML = `
+      <div class="card">
+        <h3 class="card-title">${icon('fa-list')}All databases</h3>
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Tables</th><th>Size</th><th>Collation</th><th></th></tr></thead>
+          <tbody>
+            ${dbs.length === 0 ? `<tr><td colspan="5" class="text-slate-400 text-center py-4">No databases.</td></tr>` : dbs.map((d) => `
+            <tr>
+              <td class="font-medium text-slate-900">${escapeHTML(d.name)}</td>
+              <td>${d.tables}</td>
+              <td>${fmt(d.size_mb) + " MB"}</td>
+              <td class="text-slate-500">${escapeHTML(d.collation || '')}</td>
+              <td class="text-right"><button class="rowbtn text-indigo-600" data-db="${escapeHTML(d.name)}">browse tables</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    body.querySelectorAll('button[data-db]').forEach((btn) => {
+      btn.addEventListener('click', () => { drillDB = btn.dataset.db; draw(); });
+    });
+  }
+
+  async function drawTables(body) {
+    const tables = await api('GET', `/api/db-manage/databases/${encodeURIComponent(drillDB)}/tables`);
+    body.innerHTML = `
+      <button class="rowbtn mb-3" id="dbmanage-back-db">${icon('fa-arrow-left', 'mr-1')}All databases</button>
+      <div class="card">
+        <h3 class="card-title">${icon('fa-table')}Tables in ${escapeHTML(drillDB)}</h3>
+        <table class="data-table">
+          <thead><tr><th>Name</th><th>Engine</th><th>Rows (approx.)</th><th>Size</th><th></th></tr></thead>
+          <tbody>
+            ${tables.length === 0 ? `<tr><td colspan="5" class="text-slate-400 text-center py-4">No tables.</td></tr>` : tables.map((t) => `
+            <tr>
+              <td class="font-medium text-slate-900">${escapeHTML(t.name)}</td>
+              <td class="text-slate-500">${escapeHTML(t.engine || '')}</td>
+              <td>${t.rows}</td>
+              <td>${fmt(t.size_mb) + " MB"}</td>
+              <td class="text-right">
+                <button class="rowbtn text-indigo-600" data-table="${escapeHTML(t.name)}">browse rows</button>
+                ${t.has_primary_key ? '' : `<span class="badge badge-warn ml-2" title="No primary key — rows can be viewed but not edited">${icon('fa-lock', 'mr-0.5')}read-only</span>`}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    body.querySelector('#dbmanage-back-db').addEventListener('click', () => { drillDB = null; draw(); });
+    body.querySelectorAll('button[data-table]').forEach((btn) => {
+      btn.addEventListener('click', () => { drillTable = btn.dataset.table; page = 1; draw(); });
+    });
+  }
+
+  async function drawRows(body) {
+    const result = await api('GET', `/api/db-manage/databases/${encodeURIComponent(drillDB)}/tables/${encodeURIComponent(drillTable)}/rows?page=${page}`);
+    const { columns, rows, total, page_size } = result;
+    const lastPage = Math.max(1, Math.ceil(total / page_size));
+    body.innerHTML = `
+      <button class="rowbtn mb-3" id="dbmanage-back-tables">${icon('fa-arrow-left', 'mr-1')}Tables in ${escapeHTML(drillDB)}</button>
+      <div class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="card-title mb-0">${icon('fa-table')}${escapeHTML(drillDB)}.${escapeHTML(drillTable)}</h3>
+          <div class="text-xs text-slate-500">${total} row${total === 1 ? '' : 's'} total — page ${page} of ${lastPage}</div>
+        </div>
+        ${result.editable ? '' : `<p class="text-xs text-amber-600 mb-3">${icon('fa-lock', 'mr-1')}This table has no primary key, so individual rows cannot be safely identified for editing — shown read-only.</p>`}
+        <div class="overflow-x-auto">
+        <table class="data-table" id="dbmanage-rows-table">
+          <thead><tr>
+            ${columns.map((c) => `<th>${escapeHTML(c.name)}${c.primary_key ? ' <span class="text-indigo-500" title="Primary key">'+icon('fa-key')+'</span>' : ''}<div class="text-[10px] font-normal text-slate-400 normal-case">${escapeHTML(c.type)}</div></th>`).join('')}
+            ${result.editable ? '<th></th>' : ''}
+          </tr></thead>
+          <tbody>
+            ${rows.length === 0 ? `<tr><td colspan="${columns.length + 1}" class="text-slate-400 text-center py-4">No rows.</td></tr>` : rows.map((row, i) => `
+            <tr data-row-index="${i}">
+              ${columns.map((c) => {
+                const val = row[c.name];
+                const shown = val === null || val === undefined ? '' : String(val);
+                if (c.primary_key || !result.editable) {
+                  return `<td class="font-mono text-xs text-slate-500">${escapeHTML(shown)}</td>`;
+                }
+                return `<td><input type="text" class="field-input cell-input" data-col="${escapeHTML(c.name)}" value="${escapeHTML(shown)}"></td>`;
+              }).join('')}
+              ${result.editable ? `<td class="text-right"><button class="btn btn-sm btn-primary row-save-btn">${icon('fa-floppy-disk')}Save</button></td>` : ''}
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        </div>
+        <div class="flex items-center justify-between mt-3">
+          <button class="btn btn-sm" id="dbmanage-prev" ${page <= 1 ? 'disabled' : ''}>${icon('fa-chevron-left', 'mr-1')}Prev</button>
+          <button class="btn btn-sm" id="dbmanage-next" ${page >= lastPage ? 'disabled' : ''}>Next${icon('fa-chevron-right', 'ml-1')}</button>
+        </div>
+      </div>`;
+
+    body.querySelector('#dbmanage-back-tables').addEventListener('click', () => { drillTable = null; draw(); });
+    body.querySelector('#dbmanage-prev').addEventListener('click', () => { if (page > 1) { page--; draw(); } });
+    body.querySelector('#dbmanage-next').addEventListener('click', () => { if (page < lastPage) { page++; draw(); } });
+
+    if (!result.editable) return;
+    const pkCols = columns.filter((c) => c.primary_key).map((c) => c.name);
+    body.querySelectorAll('.row-save-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const tr = btn.closest('tr');
+        const i = Number(tr.dataset.rowIndex);
+        const original = rows[i];
+        const primaryKey = {};
+        pkCols.forEach((pk) => { primaryKey[pk] = String(original[pk]); });
+        const changes = {};
+        tr.querySelectorAll('.cell-input').forEach((input) => {
+          const col = input.dataset.col;
+          const newVal = input.value;
+          const oldVal = original[col] === null || original[col] === undefined ? '' : String(original[col]);
+          if (newVal !== oldVal) changes[col] = newVal;
+        });
+        if (Object.keys(changes).length === 0) { toast('Nothing changed on that row', 'ok'); return; }
+        btn.disabled = true;
+        try {
+          await api('POST', `/api/db-manage/databases/${encodeURIComponent(drillDB)}/tables/${encodeURIComponent(drillTable)}/rows`,
+            { primary_key: primaryKey, changes });
+          toast('Row saved', 'ok');
+          await drawRows(body);
+        } catch (err) {
+          toast('Save failed: ' + err.message, 'err');
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  // ---- Users & grants ----
+
+  async function drawUsers(body) {
+    const users = (await api('GET', '/api/db-manage/users')) || [];
+    const dbs = (await api('GET', '/api/db-manage/databases')) || [];
+    body.innerHTML = `
+      <div class="card">
+        <h3 class="card-title">${icon('fa-users')}Database users</h3>
+        <table class="data-table">
+          <thead><tr><th>User</th><th>Host</th><th>Grants</th><th></th></tr></thead>
+          <tbody>
+            ${users.length === 0 ? `<tr><td colspan="4" class="text-slate-400 text-center py-4">No managed users yet.</td></tr>` : users.map((u, i) => `
+            <tr>
+              <td class="font-medium text-slate-900">${escapeHTML(u.user)}</td>
+              <td class="font-mono text-xs text-slate-500">${escapeHTML(u.host)}</td>
+              <td class="font-mono text-[11px] text-slate-500 max-w-md">${u.grants.map((g) => escapeHTML(g)).join('<br>')}</td>
+              <td class="text-right space-x-3 whitespace-nowrap">
+                <button class="rowbtn text-indigo-600" data-action="grant" data-user="${escapeHTML(u.user)}" data-host="${escapeHTML(u.host)}">grant</button>
+                <button class="rowbtn text-indigo-600" data-action="revoke" data-user="${escapeHTML(u.user)}" data-host="${escapeHTML(u.host)}">revoke</button>
+                <button class="rowbtn" data-action="drop" data-user="${escapeHTML(u.user)}" data-host="${escapeHTML(u.host)}">drop</button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h3 class="card-title">${icon('fa-user-plus')}Create a user</h3>
+        <form id="dbmanage-user-create-form" class="flex flex-wrap items-end gap-3">
+          <div><label class="field-label">Username</label><input type="text" name="user" required class="field-input" style="width:auto"></div>
+          <div><label class="field-label">Host</label><input type="text" name="host" value="localhost" class="field-input" style="width:auto" placeholder="localhost, %, or an IP"></div>
+          <div><label class="field-label">Password</label><input type="password" name="password" autocomplete="new-password" required class="field-input" style="width:auto"></div>
+          <button type="submit" class="btn btn-primary">${icon('fa-plus')}Create</button>
+        </form>
+        <div class="output-wrap hidden mt-3"><div class="output-panel"></div></div>
+      </div>`;
+
+    body.querySelector('#dbmanage-user-create-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const outWrap = body.querySelector('.output-wrap');
+      const out = outWrap.querySelector('.output-panel');
+      outWrap.classList.remove('hidden'); out.classList.remove('err'); out.textContent = 'Working…';
+      try {
+        const result = await api('POST', '/api/db-manage/users', {
+          user: fd.get('user'), host: fd.get('host') || 'localhost', password: fd.get('password'),
+        });
+        out.textContent = result.output || '(no output)';
+        toast('User created', 'ok');
+        await drawUsers(body);
+      } catch (err) {
+        out.classList.add('err');
+        out.textContent = ((err.data && err.data.output) ? err.data.output + '\n\n' : '') + 'Error: ' + err.message;
+        toast('Create failed: ' + err.message, 'err');
+      }
+    });
+
+    body.querySelectorAll('button[data-action="drop"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const user = btn.dataset.user, host = btn.dataset.host;
+        const res = await confirmModal({
+          title: `Drop ${user}@${host}?`,
+          body: `<p>This permanently removes the account and every grant it has. Data in any database is untouched.</p>`,
+          confirmLabel: 'Drop user', danger: true, requireText: user,
+        });
+        if (!res) return;
+        try {
+          await api('POST', '/api/db-manage/users/drop', { user, host });
+          toast('User dropped', 'ok');
+          await drawUsers(body);
+        } catch (err) {
+          toast('Drop failed: ' + err.message, 'err');
+        }
+      });
+    });
+
+    body.querySelectorAll('button[data-action="grant"], button[data-action="revoke"]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const user = btn.dataset.user, host = btn.dataset.host;
+        const isGrant = btn.dataset.action === 'grant';
+        // Every field confirmModal should hand back in res.values needs its
+        // own [id] — including each privilege checkbox — because the modal
+        // (and everything in it) is already removed from the DOM by the
+        // time this code runs after the await; there is nothing left to
+        // query by class or a shared selector at that point, only what
+        // confirmModal itself captured before removing it.
+        const privilegeChoices = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'INDEX', 'REFERENCES', 'LOCK TABLES'];
+        const privId = (p) => 'dbmanage-priv-' + p.replace(/\s+/g, '-');
+        const res = await confirmModal({
+          title: `${isGrant ? 'Grant privileges to' : 'Revoke all privileges from'} ${user}@${host}`,
+          body: `
+            <label class="field-label">Database</label>
+            <select id="dbmanage-grant-db" class="field-input mb-3">${dbs.map((d) => `<option value="${escapeHTML(d.name)}">${escapeHTML(d.name)}</option>`).join('')}</select>
+            ${isGrant ? `
+            <label class="field-label">Privileges</label>
+            <div class="grid grid-cols-2 gap-1 text-sm">
+              <label class="field-checkbox-row"><input type="checkbox" id="dbmanage-grant-all"> <strong>ALL</strong></label>
+              ${privilegeChoices.map((p) => `<label class="field-checkbox-row"><input type="checkbox" id="${privId(p)}"> ${p}</label>`).join('')}
+            </div>` : `<p class="text-xs text-slate-500">Every privilege ${escapeHTML(user)}@${escapeHTML(host)} has on this database will be removed. Its access to other databases is untouched.</p>`}
+          `,
+          confirmLabel: isGrant ? 'Grant' : 'Revoke', danger: !isGrant,
+        });
+        if (!res) return;
+        const database = res.values['dbmanage-grant-db'];
+        try {
+          if (isGrant) {
+            const privileges = res.values['dbmanage-grant-all']
+              ? ['ALL']
+              : privilegeChoices.filter((p) => res.values[privId(p)]);
+            if (privileges.length === 0) { toast('Choose at least one privilege', 'err'); return; }
+            await api('POST', '/api/db-manage/grant', { user, host, database, privileges });
+            toast('Privileges granted', 'ok');
+          } else {
+            await api('POST', '/api/db-manage/revoke', { user, host, database });
+            toast('Privileges revoked', 'ok');
+          }
+          await drawUsers(body);
+        } catch (err) {
+          toast((isGrant ? 'Grant' : 'Revoke') + ' failed: ' + err.message, 'err');
+        }
+      });
+    });
+  }
+
+  await draw();
+};
+
 // ---- Tuning ---------------------------------------------------------------------
 
 views.tuning = async (container) => {
@@ -1965,14 +2318,51 @@ views.bootstrap = async (container) => {
     </div>
     <div id="secure-panel"></div>
     <div class="card">
+      <h3 class="card-title">${icon('fa-table-cells', 'text-indigo-500')}phpMyAdmin</h3>
+      <p class="text-xs text-slate-500 mb-3">
+        Whether phpMyAdmin is reachable at all, and from where, is controlled through
+        <span class="font-mono">config set phpmyadmin.enabled</span> and
+        <span class="font-mono">phpmyadmin.allow_list</span> (see the Config page) — this only sets the
+        HTTP credential guarding it, a second, independent layer in front of phpMyAdmin's own login.
+      </p>
+      <form id="pma-cred-form" class="flex flex-wrap items-end gap-3">
+        <div><label class="field-label">Username</label><input type="text" name="pma_user" required class="field-input" style="width:auto"></div>
+        <div><label class="field-label">Password</label><input type="password" name="pma_password" autocomplete="new-password" required minlength="12" class="field-input" style="width:auto" placeholder="At least 12 characters"></div>
+        <button type="submit" class="btn btn-primary">${icon('fa-key')}Set credential</button>
+      </form>
+      <p class="text-xs text-slate-500 mt-2">Applying this also re-applies hardening and reloads nginx, the same as clicking "Apply hardening" below — so a change here takes effect immediately, not just after the next full apply.</p>
+      <div class="output-wrap hidden mt-3"><div class="output-panel"></div></div>
+    </div>
+    <div class="card">
       <h3 class="card-title">${icon('fa-lock')}Certificates</h3>
       <button id="ssl-renew" class="btn">${icon('fa-rotate')}Renew all Let's Encrypt certificates</button>
       <div class="output-wrap hidden mt-3"><div class="output-panel"></div></div>
     </div>`;
 
+  container.querySelector('#pma-cred-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const outWrap = e.target.closest('.card').querySelector('.output-wrap');
+    const out = outWrap.querySelector('.output-panel');
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true; outWrap.classList.remove('hidden'); out.classList.remove('err'); out.textContent = 'Working…';
+    try {
+      const result = await api('POST', '/api/secure', {
+        pma_user: fd.get('pma_user'), pma_password: fd.get('pma_password'),
+      });
+      out.textContent = result.output || '(no output)';
+      toast('phpMyAdmin credential set', 'ok');
+      e.target.reset();
+    } catch (err) {
+      out.classList.add('err');
+      out.textContent = ((err.data && err.data.output) ? err.data.output + '\n\n' : '') + 'Error: ' + err.message;
+      toast('Could not set credential: ' + err.message, 'err');
+    } finally { btn.disabled = false; }
+  });
+
   container.querySelector('#setup-run').addEventListener('click', async () => {
     const btn = container.querySelector('#setup-run');
-    const outWrap = container.querySelectorAll('.output-wrap')[0];
+    const outWrap = btn.closest('.card').querySelector('.output-wrap');
     const out = outWrap.querySelector('.output-panel');
     btn.disabled = true; outWrap.classList.remove('hidden'); out.classList.remove('err');
     out.textContent = 'Working… this installs packages and can take a few minutes.';
@@ -1998,7 +2388,13 @@ views.bootstrap = async (container) => {
 
   container.querySelector('#ssl-renew').addEventListener('click', async () => {
     const btn = container.querySelector('#ssl-renew');
-    const outWrap = container.querySelectorAll('.output-wrap')[1];
+    // Scoped to this button's own card, not a positional index into every
+    // .output-wrap on the page — actionPanel (secure-panel, just above)
+    // inserts its own card+output-wrap between this one and setup-run's,
+    // so a fixed index silently pointed at the wrong panel's output the
+    // moment a card was added between them. Found while adding the
+    // phpMyAdmin card just above this one.
+    const outWrap = btn.closest('.card').querySelector('.output-wrap');
     const out = outWrap.querySelector('.output-panel');
     btn.disabled = true; outWrap.classList.remove('hidden'); out.textContent = 'Working…';
     try {

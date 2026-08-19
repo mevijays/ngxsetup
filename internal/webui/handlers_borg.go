@@ -50,6 +50,45 @@ func (s *Server) handleBorgStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleBorgSSHKeyGenerate generates (or, if one already exists, simply
+// reuses and re-shows) the dedicated borg SSH key — independent of
+// repository setup, so an operator can get a public key to register on a
+// remote ngxborg server as its own first step. See
+// provision.Ctx.BorgEnsureSSHKey's doc comment for why this never touches
+// repository configuration.
+func (s *Server) handleBorgSSHKeyGenerate(w http.ResponseWriter, r *http.Request) {
+	var data any
+	output, err := runCaptured(func() error {
+		c, err := newCtx(r.Context(), false)
+		if err != nil {
+			return err
+		}
+		pub, generated, err := c.BorgEnsureSSHKey()
+		if err != nil {
+			return err
+		}
+		if generated {
+			logx.Change("generated a dedicated SSH key for borg")
+		} else {
+			logx.Info("reusing the existing dedicated SSH key for borg")
+		}
+		logx.Info("")
+		logx.Info("ssh public key: %s", pub)
+		respData := map[string]any{"public_key": pub, "generated": generated}
+		// If a repository is already configured, offer the exact
+		// registration command the same way the status panel and setup
+		// flow do — nothing new to derive, just consistent with them.
+		if st := c.BorgStatus(); st.Repo != "" {
+			if hint := borg.SuggestRemoteKeyCommand(st.Repo, pub); hint != "" {
+				respData["ssh_key_suggested_command"] = hint
+			}
+		}
+		data = respData
+		return nil
+	})
+	writeActionResult(w, output, err, data)
+}
+
 type borgSetupRequest struct {
 	Repo          string `json:"repo"`
 	Encryption    string `json:"encryption"`

@@ -22,5 +22,5 @@ var Version = "dev"
 // the --help banner) and the web UI's sidebar footer.
 const (
 	Maintainer = "Vijay Vishwakarma"
-	RepoURL    = "https://github.com/sharmavijay86/ngxsetup"
+	RepoURL    = "https://github.com/mevijays/ngxsetup"
 )

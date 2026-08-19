@@ -125,6 +125,30 @@ jobs:
           echo "wp-config.php mode: $perms"
           [ "$((0$perms & 0004))" -eq 0 ] || { echo "wp-config.php is world-readable"; exit 1; }
 
+      - name: phpMyAdmin serves, not a 500, and is actually behind its credential
+        run: |
+          sudo ./ngxsetup config set phpmyadmin.enabled true
+          sudo ./ngxsetup config set phpmyadmin.allow_list 127.0.0.1/32
+          echo "ci-test-password-1234" | sudo ./ngxsetup secure --phpmyadmin-user ci-admin
+          sudo ./ngxsetup secure --apply
+          sudo ./ngxsetup tune --apply >/dev/null
+          # No credentials: must be a clean 401 (the app is reachable and the
+          # auth gate itself works), never a 500 — a 500 here is exactly the
+          # real bug this step exists to catch: nginx's worker (www-data)
+          # unable to even open the htpasswd file to check the credential.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9443/)
+          echo "no credentials: HTTP $code"
+          [ "$code" = "401" ] || { echo "expected 401, got $code"; sudo tail -20 /var/log/nginx/phpmyadmin.error.log; exit 1; }
+          # Wrong credentials: still 401, not 500.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -u ci-admin:wrong-password http://127.0.0.1:9443/)
+          echo "wrong password: HTTP $code"
+          [ "$code" = "401" ] || { echo "expected 401, got $code"; sudo tail -20 /var/log/nginx/phpmyadmin.error.log; exit 1; }
+          # Correct credentials: past the HTTP auth gate entirely (the app
+          # itself may still show its own login form — 200 either way).
+          code=$(curl -s -o /dev/null -w '%{http_code}' -u ci-admin:ci-test-password-1234 http://127.0.0.1:9443/)
+          echo "correct password: HTTP $code"
+          [ "$code" = "200" ] || { echo "expected 200, got $code"; sudo tail -20 /var/log/nginx/phpmyadmin.error.log; exit 1; }
+
       - name: Applying twice changes nothing
         run: |
           # A fair idempotency check compares two applies run back-to-back,

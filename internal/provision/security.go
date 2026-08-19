@@ -262,7 +262,18 @@ func (c *Ctx) reportSSHConfiguration() {
 
 // phpMyAdmin paths.
 const (
-	pmaDir      = "/usr/share/phpmyadmin"
+	// pmaDir must be /var/www/<pmaSlug>: the isolated systemd unit every
+	// pool (phpMyAdmin's included) runs under jails itself to exactly
+	// /var/www/%i — see ngxsetup-fpm@.service's own TemporaryFileSystem/
+	// BindPaths — so this is not a free choice of directory. Found live:
+	// installing phpMyAdmin to /usr/share/phpmyadmin instead (a plausible,
+	// "that's just where distros put it" choice) started the unit against
+	// a jail with nothing real to bind-mount, failing outright with
+	// "Failed to set up mount namespacing: /var/www/ngxsetup-tools: No
+	// such file or directory" the first time anything actually tried to
+	// start it — which nothing had, until the separate bug of
+	// ApplyPhpMyAdmin never calling StartFPMService was also fixed.
+	pmaDir      = "/var/www/" + pmaSlug
 	pmaSlug     = "ngxsetup-tools"
 	pmaHtpasswd = "/etc/nginx/ngxsetup-phpmyadmin.htpasswd"
 	pmaVersion  = "5.2.2"
@@ -279,13 +290,18 @@ func (c *Ctx) ApplyPhpMyAdmin() error {
 	linkPath := SitesEnabled + "/phpmyadmin.conf"
 
 	if !c.Config.PhpMyAdmin.Enabled {
+		// StopFPMService (not a bare file removal) is what actually stops
+		// and disables the isolated systemd unit before removing its
+		// config — disabling phpMyAdmin used to leave that unit running
+		// (or, given the bug fixed above, never actually started) with no
+		// nginx site left to reach it through.
+		if err := c.StopFPMService(pmaSlug); err != nil {
+			return err
+		}
 		if err := c.Writer.Remove(linkPath); err != nil {
 			return err
 		}
-		if err := c.Writer.Remove(confPath); err != nil {
-			return err
-		}
-		return c.Writer.Remove(fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", c.PHPVersion, pmaSlug))
+		return c.Writer.Remove(confPath)
 	}
 	// Validate() already rejects an empty allow list, but this is the code
 	// path that would expose a database console to the internet, so it is
@@ -294,7 +310,7 @@ func (c *Ctx) ApplyPhpMyAdmin() error {
 		return fmt.Errorf("phpmyadmin requires an allow list")
 	}
 	if _, err := osStat(c.Path(pmaHtpasswd)); err != nil {
-		return fmt.Errorf("no phpMyAdmin credential is set; run `ngxsetup secure phpmyadmin --user <name>` first")
+		return fmt.Errorf("no phpMyAdmin credential is set; run `ngxsetup secure --phpmyadmin-user <name>` first")
 	}
 
 	if err := c.installPhpMyAdmin(); err != nil {
@@ -309,6 +325,7 @@ func (c *Ctx) ApplyPhpMyAdmin() error {
 		AllowList:    c.Config.PhpMyAdmin.AllowList,
 		HtpasswdPath: pmaHtpasswd,
 		SocketPath:   c.SocketPath(pmaSlug),
+		Root:         pmaDir,
 	})
 	if err != nil {
 		return err
@@ -316,7 +333,13 @@ func (c *Ctx) ApplyPhpMyAdmin() error {
 	if _, err := c.Writer.Write(confPath, body, 0o644, false); err != nil {
 		return err
 	}
-	return c.Writer.Symlink(confPath, linkPath)
+	if err := c.Writer.Symlink(confPath, linkPath); err != nil {
+		return err
+	}
+	if err := c.ValidateFPMService(pmaSlug); err != nil {
+		return err
+	}
+	return c.StartFPMService(pmaSlug)
 }
 
 // SetPhpMyAdminCredential creates the HTTP credential guarding the console.
@@ -339,9 +362,20 @@ func (c *Ctx) SetPhpMyAdminCredential(username, password string) error {
 		return err
 	}
 	line := fmt.Sprintf("%s:%s\n", username, strings.TrimSpace(hash))
-	// Readable by nginx's master process only; it is a password database.
 	if _, err := c.Writer.Write(pmaHtpasswd, []byte(line), 0o640, false); err != nil {
 		return err
+	}
+	// Group www-data, not root: `auth_basic_user_file` is opened by an
+	// nginx WORKER process at request time, not the master — the master
+	// is the only one that stays root, workers run as www-data (see
+	// nginx.conf.tmpl's `user www-data;`). Found live: writing this file
+	// root:root (0640) left every phpMyAdmin request failing with a 500
+	// ("Permission denied" reading the htpasswd file), since www-data was
+	// never in a group that could read it. 0640 root:www-data still keeps
+	// it unreadable by anyone else — it's a password database — while
+	// letting the process that actually needs it read it.
+	if err := c.chown(pmaHtpasswd, "root:www-data"); err != nil {
+		return fmt.Errorf("setting %s's group so nginx can read it: %w", pmaHtpasswd, err)
 	}
 	logx.Change("phpMyAdmin credential set for %s", username)
 	return nil
@@ -374,6 +408,20 @@ func (c *Ctx) installPhpMyAdmin() error {
 
 // writeToolsPool gives phpMyAdmin its own PHP pool and user, so a flaw in it
 // cannot read any site's files.
+// writeToolsPool writes phpMyAdmin's PHP-FPM pool and the top-level
+// --fpm-config wrapper the isolated ngxsetup-fpm@ngxsetup-tools.service
+// systemd unit actually reads (ExecStart passes
+// --fpm-config /etc/ngxsetup/fpm/%i.conf — see WriteFPMService, which this
+// mirrors exactly for a real site). Writing only the pool half of that —
+// what an earlier version of this function did, at
+// /etc/php/<v>/fpm/pool.d/<slug>.conf — put the config where nothing ever
+// read it: that path belongs to the *shared* php-fpm.conf's own
+// pool.d/*.conf include, and this project deliberately empties and
+// disables that shared service in favour of one isolated unit per pool
+// (see fpmservice.go's package doc). Confirmed live: phpMyAdmin's
+// systemd unit stayed "inactive (dead)" forever and every request 502'd,
+// because ApplyPhpMyAdmin also never started it — both are fixed together
+// here, since half of this fix without the other still doesn't work.
 func (c *Ctx) writeToolsPool() error {
 	user := "web-" + pmaSlug
 	if err := system.EnsureSystemUser(c.Context, c.Runner, user, pmaDir); err != nil {
@@ -386,7 +434,7 @@ func (c *Ctx) writeToolsPool() error {
 			return err
 		}
 	}
-	body, err := tmpl.Render("php/pool.conf.tmpl", tmpl.Pool{
+	poolBody, err := tmpl.Render("php/pool.conf.tmpl", tmpl.Pool{
 		Plan: c.Plan, Slug: pmaSlug, Domain: "phpMyAdmin",
 		User: user, Group: user,
 		SocketPath: c.SocketPath(pmaSlug), Root: pmaDir,
@@ -396,7 +444,20 @@ func (c *Ctx) writeToolsPool() error {
 	if err != nil {
 		return err
 	}
-	_, err = c.Writer.Write(fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", c.PHPVersion, pmaSlug), body, 0o644, false)
+	if _, err := c.Writer.Write(c.fpmPoolPath(pmaSlug), poolBody, 0o644, false); err != nil {
+		return err
+	}
+
+	globalBody, err := tmpl.Render("php/fpm-global.conf.tmpl", tmpl.FPMGlobal{
+		Domain:   "phpMyAdmin",
+		PidFile:  filepath.Join(FPMRunDir, "fpm-"+pmaSlug+".pid"),
+		ErrorLog: filepath.Join(PHPLogDir, pmaSlug+"-fpm.log"),
+		PoolFile: c.fpmPoolPath(pmaSlug),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = c.Writer.Write(c.fpmConfigPath(pmaSlug), globalBody, 0o644, false)
 	return err
 }
 

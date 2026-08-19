@@ -206,4 +206,5 @@ type PhpMyAdmin struct {
 	AllowList    []string
 	HtpasswdPath string
 	SocketPath   string
+	Root         string
 }

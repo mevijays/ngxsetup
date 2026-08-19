@@ -133,6 +133,18 @@ func (c *Ctx) BorgSSHPublicKey() (string, error) {
 	return borg.PublicKey()
 }
 
+// BorgEnsureSSHKey generates a dedicated borg SSH key if one doesn't
+// already exist (reusing the existing one otherwise — never silently
+// replacing a key already registered on some remote end), and returns its
+// public half. Unlike SetupBorgRepo, this never touches repository
+// configuration or the passphrase — it exists so an operator can get a
+// public key to register on a remote server (e.g. via ngxborg's `user key
+// add`) as its own first step, before — or instead of — running a full
+// repository setup in the same action.
+func (c *Ctx) BorgEnsureSSHKey() (pubKey string, generated bool, err error) {
+	return borg.EnsureSSHKey(c.Context, c.Runner, "")
+}
+
 // BorgStatus reports whether a repository is configured and currently
 // reachable, for a dashboard/status display.
 type BorgStatus struct {

@@ -21,7 +21,7 @@ server {
     ssl_certificate_key {{ .KeyPath }};
 {{- end }}
 
-    root /usr/share/phpmyadmin;
+    root {{ .Root }};
     index index.php;
 
     access_log /var/log/nginx/phpmyadmin.access.log main;

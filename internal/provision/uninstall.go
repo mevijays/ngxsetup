@@ -97,7 +97,8 @@ func (c *Ctx) PlanUninstall(opts UninstallOptions) UninstallPlan {
 		filepath.Join(SitesAvailable, "phpmyadmin.conf"),
 		filepath.Join(SitesEnabled, "phpmyadmin.conf"),
 		pmaDir,
-		fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", c.PHPVersion, pmaSlug),
+		// phpMyAdmin's own pool/global-config files live under FPMConfigDir,
+		// already in this list below — no separate entry needed for them.
 		fmt.Sprintf("/etc/php/%s/fpm/conf.d/99-ngxsetup.ini", c.PHPVersion),
 		fmt.Sprintf("/etc/php/%s/cli/conf.d/99-ngxsetup.ini", c.PHPVersion),
 		FPMConfigDir,

@@ -140,3 +140,46 @@ func TestApplySecurityIsIdempotentAcrossRuns(t *testing.T) {
 		t.Fatalf("break-glass key should appear exactly once after two applies, appeared %d times:\n%s", n, content)
 	}
 }
+
+// TestSetPhpMyAdminCredentialWritesReadableMode is a regression test for a
+// real bug found live: the htpasswd file was written 0640 root:root, and
+// nginx's WORKER processes — not the master, the only one that stays root —
+// are what actually open it via auth_basic_user_file on every request. Every
+// phpMyAdmin request failed with a 500 the moment credentials were set,
+// since www-data (what workers run as) was never in a group that could read
+// it. This locks in the mode staying tight (still not world-readable — it's
+// a password database); the group-ownership half of the fix (c.chown to
+// root:www-data) is skipped here — testCtx's sandboxed root has no reason
+// to (and correctly does not) touch real system groups, see c.chown's own
+// doc comment — and is instead exercised for real by CI's end-to-end job
+// against a real nginx and a real www-data group.
+func TestSetPhpMyAdminCredentialWritesReadableMode(t *testing.T) {
+	c := testCtx(t)
+
+	if err := c.SetPhpMyAdminCredential("dbadmin", "at-least-twelve-characters"); err != nil {
+		t.Fatalf("SetPhpMyAdminCredential: %v", err)
+	}
+
+	info, err := os.Stat(c.Path(pmaHtpasswd))
+	if err != nil {
+		t.Fatalf("stat %s: %v", pmaHtpasswd, err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o640 {
+		t.Errorf("htpasswd mode = %v, want 0640 (owner+group read/write, nothing for others)", mode)
+	}
+
+	body, err := os.ReadFile(c.Path(pmaHtpasswd))
+	if err != nil {
+		t.Fatalf("reading %s: %v", pmaHtpasswd, err)
+	}
+	if !strings.HasPrefix(string(body), "dbadmin:") {
+		t.Errorf("htpasswd content = %q, want it to start with the username", body)
+	}
+}
+
+func TestSetPhpMyAdminCredentialRejectsShortPassword(t *testing.T) {
+	c := testCtx(t)
+	if err := c.SetPhpMyAdminCredential("dbadmin", "short"); err == nil {
+		t.Error("expected an error for a password under 12 characters")
+	}
+}
