@@ -1,0 +1,40 @@
+site_name: ngxsetup
+site_description: A single binary that turns a bare Ubuntu/Debian server into a tuned, hardened WordPress host
+site_url: https://mevijays.github.io/ngxsetup/
+repo_url: https://github.com/mevijays/ngxsetup
+repo_name: mevijays/ngxsetup
+edit_uri: edit/main/docs/
+
+theme:
+  name: readthedocs
+  highlightjs: true
+  hljs_languages:
+    - bash
+    - go
+    - yaml
+    - ini
+    - nginx
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Getting started: getting-started.md
+  - Architecture: architecture.md
+  - CLI reference: cli-reference.md
+  - Web UI guide: web-ui.md
+  - Tuning: tuning.md
+  - Security: security.md
+  - Backups: backups.md
+  - Pairing with ngxborg: ngxborg-integration.md
+  - Troubleshooting: troubleshooting.md
+  - Contributing: contributing.md
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - admonition
+  - fenced_code
+  - tables
+  - def_list
+
+strict: false
