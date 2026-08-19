@@ -41,7 +41,8 @@ type Writer struct {
 	// Force allows overwriting files this tool did not create.
 	Force bool
 
-	journal []entry
+	journal      []entry
+	totalChanges int
 }
 
 // sandboxed reports whether this writer is operating on a copy of the
@@ -123,6 +124,7 @@ func (w *Writer) Write(path string, content []byte, mode os.FileMode, requireMan
 		return false, err
 	}
 	w.journal = append(w.journal, e)
+	w.totalChanges++
 
 	if exists {
 		logx.Change("updated %s", path)
@@ -151,6 +153,7 @@ func (w *Writer) WriteIfAbsent(path string, content []byte, mode os.FileMode) (b
 		return false, err
 	}
 	w.journal = append(w.journal, entry{path: full, created: true})
+	w.totalChanges++
 	logx.Change("created %s", path)
 	return true, nil
 }
@@ -212,6 +215,7 @@ func (w *Writer) Symlink(target, link string) error {
 		return err
 	}
 	w.journal = append(w.journal, entry{path: full, created: true, wasSymlink: true})
+	w.totalChanges++
 	logx.Change("linked %s -> %s", link, target)
 	return nil
 }
@@ -235,12 +239,33 @@ func (w *Writer) Remove(path string) error {
 		return err
 	}
 	w.journal = append(w.journal, entry{path: full, backup: bak})
+	w.totalChanges++
 	logx.Change("removed %s", path)
 	return nil
 }
 
-// Changed reports how many files this writer has modified.
+// Changed reports how many files this writer has modified in the current,
+// not-yet-committed transaction — the journal Rollback/Commit operate on.
 func (w *Writer) Changed() int { return len(w.journal) }
+
+// TotalChanges reports how many files this writer has ever actually
+// modified, across every transaction, even after each one's own Commit
+// clears the per-transaction journal Changed() reflects. A caller that
+// runs several Transactions in sequence (nginx, PHP, database, kernel
+// limits — see cmdTune) and needs to know "did *any* of them change
+// anything" — to decide whether reloading services afterward is even
+// necessary — should use this, not Changed(): checking Changed() after
+// the last Transaction only ever sees that one Transaction's own work,
+// having lost every earlier one's the moment it committed.
+//
+// Found live: `ngxsetup tune --apply` reloaded nginx and every site's
+// PHP-FPM pool unconditionally on every run, even when every single file
+// it had just processed was already up to date — a real operational cost
+// (a brief reload, systemd journal noise) for literally nothing, on top
+// of tripping CI's own idempotency check. A writer is constructed fresh
+// per command invocation (see provision.New), so this never needs
+// resetting — there is nothing earlier in the same process to leak from.
+func (w *Writer) TotalChanges() int { return w.totalChanges }
 
 // Rollback restores every file this writer has touched, newest first. It is
 // called when post-write validation fails, which is the moment a provisioning

@@ -393,6 +393,14 @@ func cmdTune(ctx context.Context, args []string) error {
 	if err := requireSetup(c); err != nil {
 		return err
 	}
+	// Each Transaction below calls Writer.Commit on success, which clears
+	// the per-transaction journal Writer.Changed() reflects — so "did any
+	// of the four actually change something" has to be read from
+	// TotalChanges, which nothing resets, snapshotted before the first one
+	// runs. See TotalChanges's doc comment for the real bug this fixes:
+	// reloading nginx and every site's PHP-FPM pool unconditionally, even
+	// when nothing this apply just did needed either.
+	changesBefore := c.Writer.TotalChanges()
 	if err := c.Transaction("Applying nginx configuration", c.ApplyNginx, c.ValidateNginx); err != nil {
 		return err
 	}
@@ -407,8 +415,12 @@ func cmdTune(ctx context.Context, args []string) error {
 	}
 
 	if !g.dryRun {
-		if err := c.ReloadServices(); err != nil {
-			return err
+		if c.Writer.TotalChanges() > changesBefore {
+			if err := c.ReloadServices(); err != nil {
+				return err
+			}
+		} else {
+			logx.Skip("nothing changed; nginx and PHP-FPM left running as-is")
 		}
 		if *save {
 			c.Config.Profile = string(c.Plan.Profile)

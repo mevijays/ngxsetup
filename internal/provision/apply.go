@@ -278,7 +278,8 @@ func (c *Ctx) ApplySystem() error {
 	if err != nil {
 		return err
 	}
-	if _, err := c.Writer.Write("/etc/sysctl.d/60-ngxsetup.conf", sysctlBody, 0o644, false); err != nil {
+	sysctlChanged, err := c.Writer.Write("/etc/sysctl.d/60-ngxsetup.conf", sysctlBody, 0o644, false)
+	if err != nil {
 		return err
 	}
 
@@ -329,13 +330,25 @@ func (c *Ctx) ApplySystem() error {
 		return nil
 	}
 
-	// Applying sysctl is allowed to fail: an unprivileged container cannot set
-	// most network parameters, and that is a warning rather than an error.
-	if out, err := c.Runner.Output(c.Context, "sysctl", "-p", "/etc/sysctl.d/60-ngxsetup.conf"); err != nil {
-		logx.Warn("some kernel parameters could not be applied (normal inside a container): %v", err)
-		logx.Debug("%s", out)
+	// Re-running `sysctl -p` (and reporting it as a change) only when the
+	// file itself changed — mirroring ApplyDB's own "nothing to do" check
+	// above — rather than unconditionally on every apply. Found live:
+	// `ngxsetup tune --apply` logged "✓ applied kernel tuning" on every
+	// single run regardless of whether anything had changed, which is
+	// exactly what tripped CI's idempotency check and, for a real
+	// operator, misrepresented a no-op run as one that changed something.
+	if sysctlChanged {
+		// Applying sysctl is allowed to fail: an unprivileged container
+		// cannot set most network parameters, and that is a warning
+		// rather than an error.
+		if out, err := c.Runner.Output(c.Context, "sysctl", "-p", "/etc/sysctl.d/60-ngxsetup.conf"); err != nil {
+			logx.Warn("some kernel parameters could not be applied (normal inside a container): %v", err)
+			logx.Debug("%s", out)
+		} else {
+			logx.Change("applied kernel tuning")
+		}
 	} else {
-		logx.Change("applied kernel tuning")
+		logx.Skip("kernel tuning already up to date")
 	}
 	return system.DaemonReload(c.Context, c.Runner)
 }

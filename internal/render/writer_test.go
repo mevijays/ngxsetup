@@ -128,6 +128,42 @@ func TestCommitDiscardsJournal(t *testing.T) {
 	}
 }
 
+// TestTotalChangesSurvivesCommit is a regression test for a real bug found
+// live: `ngxsetup tune --apply` reloaded nginx and every site's PHP-FPM
+// pool on every run, even when nothing had changed, because the code
+// deciding whether to reload checked Changed() — which each Transaction's
+// own Commit clears — after several Transactions had already run and
+// committed. TotalChanges must keep counting across Commit calls so a
+// caller running several Transactions in sequence can still tell whether
+// *any* of them changed anything.
+func TestTotalChangesSurvivesCommit(t *testing.T) {
+	w := newWriter(t)
+
+	w.Write("/etc/a.conf", managed("x\n"), 0o644, true)
+	w.Commit()
+	if w.Changed() != 0 {
+		t.Fatalf("Changed() after Commit = %d, want 0", w.Changed())
+	}
+	if w.TotalChanges() != 1 {
+		t.Fatalf("TotalChanges() after one write+commit = %d, want 1", w.TotalChanges())
+	}
+
+	// A second transaction that writes nothing new (identical content) must
+	// not add to the total...
+	w.Write("/etc/a.conf", managed("x\n"), 0o644, true)
+	w.Commit()
+	if w.TotalChanges() != 1 {
+		t.Fatalf("TotalChanges() after a no-op rewrite = %d, want still 1", w.TotalChanges())
+	}
+
+	// ...but a third transaction that genuinely changes something must.
+	w.Write("/etc/b.conf", managed("y\n"), 0o644, true)
+	w.Commit()
+	if w.TotalChanges() != 2 {
+		t.Fatalf("TotalChanges() after a second real write = %d, want 2", w.TotalChanges())
+	}
+}
+
 func TestBackupPreservesOriginalPath(t *testing.T) {
 	w := newWriter(t)
 	target := filepath.Join(w.Root, "etc/nginx/nginx.conf")

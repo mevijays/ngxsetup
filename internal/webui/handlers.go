@@ -227,6 +227,13 @@ func (s *Server) handleTuneApply(w http.ResponseWriter, r *http.Request) {
 		if err := provision.RequireSetup(c); err != nil {
 			return err
 		}
+		// See Writer.TotalChanges's doc comment: each Transaction below
+		// commits and clears the per-transaction journal, so "did any of
+		// the four actually change something" has to be read from
+		// TotalChanges, snapshotted before the first one runs — otherwise
+		// this reloads nginx and every site's PHP-FPM pool even when
+		// nothing this apply just did needed either.
+		changesBefore := c.Writer.TotalChanges()
 		if err := c.Transaction("Applying nginx configuration", c.ApplyNginx, c.ValidateNginx); err != nil {
 			return err
 		}
@@ -239,8 +246,10 @@ func (s *Server) handleTuneApply(w http.ResponseWriter, r *http.Request) {
 		if err := c.Transaction("Applying kernel and service limits", c.ApplySystem, nil); err != nil {
 			return err
 		}
-		if err := c.ReloadServices(); err != nil {
-			return err
+		if c.Writer.TotalChanges() > changesBefore {
+			if err := c.ReloadServices(); err != nil {
+				return err
+			}
 		}
 		if req.Save {
 			c.Config.Profile = string(c.Plan.Profile)
