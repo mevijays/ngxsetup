@@ -1,6 +1,6 @@
 # macOS
 .DS_Store
-
+.claude
 # Editors
 .vscode/
 .idea/
