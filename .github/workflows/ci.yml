@@ -127,8 +127,8 @@ jobs:
 
       - name: phpMyAdmin serves, not a 500, and is actually behind its credential
         run: |
-          sudo ./ngxsetup config set phpmyadmin.enabled true
           sudo ./ngxsetup config set phpmyadmin.allow_list 127.0.0.1/32
+          sudo ./ngxsetup config set phpmyadmin.enabled true
           echo "ci-test-password-1234" | sudo ./ngxsetup secure --phpmyadmin-user ci-admin
           sudo ./ngxsetup secure --apply
           sudo ./ngxsetup tune --apply >/dev/null

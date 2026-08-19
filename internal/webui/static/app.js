@@ -62,6 +62,43 @@ function badgeClass(status) {
   return 'badge-off';
 }
 
+// ---- collapsible cards -----------------------------------------------------------
+//
+// Wraps everything in a .card after its .card-title into a toggleable body
+// and appends a chevron to the title. Call once per card, after its HTML is
+// already in the DOM (so there's something to wrap) and before any code
+// grabs references into that body — makeCardCollapsible moves nodes, it
+// doesn't clone them, so existing element references stay valid.
+function makeCardCollapsible(card, defaultOpen) {
+  if (!card) return;
+  const title = card.querySelector('.card-title');
+  if (!title || card.querySelector(':scope > .card-body')) return; // no title, or already applied
+  // The title might be a direct child of the card, or sit inside a small
+  // flex wrapper (e.g. a header row that also holds an action button) —
+  // either way, everything to collapse is whatever follows that top-level
+  // row within the card.
+  let headerRow = title;
+  while (headerRow.parentElement && headerRow.parentElement !== card) headerRow = headerRow.parentElement;
+  const body = document.createElement('div');
+  body.className = 'card-body';
+  let node = headerRow.nextSibling;
+  while (node) {
+    const next = node.nextSibling;
+    body.appendChild(node);
+    node = next;
+  }
+  card.appendChild(body);
+  const chevron = document.createElement('i');
+  chevron.className = 'fa-solid fa-chevron-down card-collapse-chevron';
+  title.classList.add('card-title-collapsible');
+  title.appendChild(chevron);
+  if (!defaultOpen) { body.classList.add('hidden'); chevron.classList.add('collapsed'); }
+  title.addEventListener('click', () => {
+    const nowHidden = body.classList.toggle('hidden');
+    chevron.classList.toggle('collapsed', nowHidden);
+  });
+}
+
 // A small set of muted, colorblind-friendlyish colors reused across every
 // Chart.js instance so the dashboard reads as one coherent palette rather
 // than each chart picking its own.
@@ -1578,6 +1615,16 @@ async function renderBorgSection(container, sites) {
     </div>
     ` : ''}`;
 
+  // Collapsible cards: this tab stacks up to seven cards once a repository
+  // is configured, most of which are "set this up once and forget it"
+  // rather than something reached for on every visit. Keep only the two
+  // action-now cards open by default; everything else starts collapsed.
+  container.querySelectorAll(':scope > .card').forEach((card) => {
+    const heading = card.querySelector('.card-title')?.textContent || '';
+    const openByDefault = /Run a backup|Archives/.test(heading);
+    makeCardCollapsible(card, openByDefault);
+  });
+
   bindCopyButtons(container);
 
   container.querySelector('#borg-generate-key').addEventListener('click', async () => {
@@ -2017,16 +2064,26 @@ views.dbmanage = async (container) => {
           </tr></thead>
           <tbody>
             ${rows.length === 0 ? `<tr><td colspan="${columns.length + 1}" class="text-slate-400 text-center py-4">No rows.</td></tr>` : rows.map((row, i) => `
-            <tr data-row-index="${i}">
+            <tr data-row-index="${i}" class="group">
               ${columns.map((c) => {
                 const val = row[c.name];
                 const shown = val === null || val === undefined ? '' : String(val);
                 if (c.primary_key || !result.editable) {
                   return `<td class="font-mono text-xs text-slate-500">${escapeHTML(shown)}</td>`;
                 }
-                return `<td><input type="text" class="field-input cell-input" data-col="${escapeHTML(c.name)}" value="${escapeHTML(shown)}"></td>`;
+                // Rows start read-only: a plain text span, with the actual
+                // input sitting alongside it, hidden — entering edit mode
+                // is just a class toggle on nodes already in the DOM, no
+                // re-render needed for that part.
+                return `<td>
+                  <span class="cell-display text-sm text-slate-700">${escapeHTML(shown)}</span>
+                  <input type="text" class="field-input cell-input hidden" data-col="${escapeHTML(c.name)}" value="${escapeHTML(shown)}">
+                </td>`;
               }).join('')}
-              ${result.editable ? `<td class="text-right"><button class="btn btn-sm btn-primary row-save-btn">${icon('fa-floppy-disk')}Save</button></td>` : ''}
+              ${result.editable ? `<td class="text-right whitespace-nowrap">
+                <button class="row-edit-btn p-1 text-slate-400 opacity-0 group-hover:opacity-100 hover:text-indigo-600 transition-opacity cursor-pointer" title="Edit row">${icon('fa-pen', 'text-xs')}</button>
+                <button class="row-save-btn hidden p-1 text-indigo-600 hover:text-indigo-700 cursor-pointer" title="Save row" disabled>${icon('fa-floppy-disk', 'text-xs')}</button>
+              </td>` : ''}
             </tr>`).join('')}
           </tbody>
         </table>
@@ -2043,6 +2100,25 @@ views.dbmanage = async (container) => {
 
     if (!result.editable) return;
     const pkCols = columns.filter((c) => c.primary_key).map((c) => c.name);
+
+    function enterEditMode(tr) {
+      tr.querySelectorAll('.cell-display').forEach((el) => el.classList.add('hidden'));
+      tr.querySelectorAll('.cell-input').forEach((el) => el.classList.remove('hidden'));
+      tr.querySelector('.row-edit-btn').classList.add('hidden');
+      const saveBtn = tr.querySelector('.row-save-btn');
+      saveBtn.classList.remove('hidden');
+      saveBtn.disabled = false;
+    }
+    function exitEditMode(tr) {
+      tr.querySelectorAll('.cell-input').forEach((el) => el.classList.add('hidden'));
+      tr.querySelectorAll('.cell-display').forEach((el) => el.classList.remove('hidden'));
+      tr.querySelector('.row-save-btn').classList.add('hidden');
+      tr.querySelector('.row-edit-btn').classList.remove('hidden');
+    }
+
+    body.querySelectorAll('.row-edit-btn').forEach((btn) => {
+      btn.addEventListener('click', () => enterEditMode(btn.closest('tr')));
+    });
     body.querySelectorAll('.row-save-btn').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const tr = btn.closest('tr');
@@ -2057,7 +2133,11 @@ views.dbmanage = async (container) => {
           const oldVal = original[col] === null || original[col] === undefined ? '' : String(original[col]);
           if (newVal !== oldVal) changes[col] = newVal;
         });
-        if (Object.keys(changes).length === 0) { toast('Nothing changed on that row', 'ok'); return; }
+        if (Object.keys(changes).length === 0) {
+          toast('Nothing changed on that row', 'ok');
+          exitEditMode(tr);
+          return;
+        }
         btn.disabled = true;
         try {
           await api('POST', `/api/db-manage/databases/${encodeURIComponent(drillDB)}/tables/${encodeURIComponent(drillTable)}/rows`,

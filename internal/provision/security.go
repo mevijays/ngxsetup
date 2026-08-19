@@ -427,8 +427,17 @@ func (c *Ctx) writeToolsPool() error {
 	if err := system.EnsureSystemUser(c.Context, c.Runner, user, pmaDir); err != nil {
 		return err
 	}
-	tmpDir := "/var/lib/ngxsetup/tools/tmp"
-	sessDir := "/var/lib/ngxsetup/tools/sessions"
+	// Same reasoning as siteTmpDir/siteSessionDir for a real site: the FPM
+	// systemd unit's ReadWritePaths only covers WebRoot/%i (here, pmaDir
+	// itself) — anything outside it, such as the /var/lib/ngxsetup/tools
+	// this used to point at, is read-only inside the jail and phpMyAdmin's
+	// session_start() fails with a bare "Permission denied", confirmed
+	// live. Keeping them under pmaDir puts them in the one place this
+	// pool's sandbox can actually write, matching every WordPress site's
+	// own pool. Dot-prefixed so they read as internal, though the vhost's
+	// location blocks already deny a literal /tmp/ path either way.
+	tmpDir := filepath.Join(pmaDir, ".tmp")
+	sessDir := filepath.Join(pmaDir, ".sessions")
 	for _, d := range []string{tmpDir, sessDir} {
 		if err := c.Writer.EnsureDir(d, 0o700, user); err != nil {
 			return err

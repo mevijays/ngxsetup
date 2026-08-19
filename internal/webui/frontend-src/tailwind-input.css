@@ -33,6 +33,13 @@
   .card-title {
     @apply text-sm font-semibold text-slate-900 flex items-center gap-2 mb-3;
   }
+  /* Collapsible cards: makeCardCollapsible() (app.js) wraps a card's body
+     and appends this chevron to its .card-title, toggling on click. */
+  .card-title-collapsible { @apply cursor-pointer select-none; }
+  .card-collapse-chevron {
+    @apply ml-auto text-slate-400 transition-transform duration-150;
+  }
+  .card-collapse-chevron.collapsed { @apply -rotate-90; }
   .page-title {
     @apply text-xl font-semibold text-slate-900 mb-5 flex items-center gap-2;
   }
