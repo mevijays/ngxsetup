@@ -35,9 +35,22 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum ngxsetup-* > SHA256SUMS
 
+      # v1.0.0-beta, v1.2.0-rc1, etc. publish as a GitHub pre-release —
+      # anything with a hyphen after the version core is, by semver
+      # convention, a pre-release build. A plain vX.Y.Z is a full release.
+      - name: Determine prerelease flag
+        id: prerelease
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
+          prerelease: ${{ steps.prerelease.outputs.value }}
           files: |
             dist/ngxsetup-linux-amd64
             dist/ngxsetup-linux-arm64
