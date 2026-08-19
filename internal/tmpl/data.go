@@ -199,6 +199,8 @@ type WPConfig struct {
 
 // PhpMyAdmin is the context for the dedicated phpMyAdmin server block.
 type PhpMyAdmin struct {
+	Plan tuning.Plan
+
 	Port         int
 	TLS          bool
 	CertPath     string

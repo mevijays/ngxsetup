@@ -321,6 +321,7 @@ func (c *Ctx) ApplyPhpMyAdmin() error {
 	}
 
 	body, err := tmpl.Render("nginx/sites/phpmyadmin.conf.tmpl", tmpl.PhpMyAdmin{
+		Plan:         c.Plan,
 		Port:         c.Config.PhpMyAdmin.Port,
 		AllowList:    c.Config.PhpMyAdmin.AllowList,
 		HtpasswdPath: pmaHtpasswd,

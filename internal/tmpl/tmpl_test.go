@@ -43,6 +43,7 @@ func TestAllTemplatesRender(t *testing.T) {
 		{"nginx/snippets/fastcgi-php.conf.tmpl", Headers{}},
 		{"nginx/sites/site.conf.tmpl", sampleSite(plan)},
 		{"nginx/sites/phpmyadmin.conf.tmpl", PhpMyAdmin{
+			Plan: plan,
 			Port: 8443, AllowList: []string{"203.0.113.4"},
 			HtpasswdPath: "/etc/nginx/ngxsetup.htpasswd", SocketPath: "/run/php/tools.sock",
 			Root: "/var/www/ngxsetup-tools",

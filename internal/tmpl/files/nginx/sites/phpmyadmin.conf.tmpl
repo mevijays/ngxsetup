@@ -40,8 +40,16 @@ server {
     auth_basic "Database administration";
     auth_basic_user_file {{ .HtpasswdPath }};
 
-    # Rate limited like any other login surface.
-    limit_req zone=ngx_login burst=5 nodelay;
+    # ngx_login (rate is per *minute*, sized for a login-form POST) is the
+    # wrong zone here: a single phpMyAdmin page load fires two dozen-plus
+    # concurrent asset requests (JS, CSS, images), which blows through a
+    # burst of 5 instantly and 429s the whole app even for a legitimate,
+    # already-authenticated visitor — confirmed live. The address
+    # allowlist and HTTP Basic auth above are what actually guard this
+    # surface against brute force; ngx_general (rate is per *second*,
+    # sized for a real page) still bounds a scripted request flood
+    # without breaking normal use.
+    limit_req zone=ngx_general burst={{ .Plan.Nginx.ReqBurstGeneral }} nodelay;
 
     location / {
         try_files $uri $uri/ =404;

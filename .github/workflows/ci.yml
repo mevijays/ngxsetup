@@ -148,6 +148,19 @@ jobs:
           code=$(curl -s -o /dev/null -w '%{http_code}' -u ci-admin:ci-test-password-1234 http://127.0.0.1:9443/)
           echo "correct password: HTTP $code"
           [ "$code" = "200" ] || { echo "expected 200, got $code"; sudo tail -20 /var/log/nginx/phpmyadmin.error.log; exit 1; }
+          # A real phpMyAdmin page load fires two dozen-plus concurrent asset
+          # requests — regression test for a real bug where the vhost used
+          # the login rate-limit zone (rate per *minute*, burst 5) instead of
+          # the general one, 429ing a legitimate, already-authenticated
+          # visitor on their very first page load.
+          seq 1 30 | xargs -P 30 -I{} curl -s -o /dev/null -w '%{http_code}\n' \
+            -u ci-admin:ci-test-password-1234 "http://127.0.0.1:9443/index.php?burst={}" \
+            > /tmp/pma-burst-codes.txt
+          if grep -q 429 /tmp/pma-burst-codes.txt; then
+            echo "a burst of 30 concurrent asset-sized requests hit HTTP 429 — the rate limit is too tight for a real page load"
+            sort /tmp/pma-burst-codes.txt | uniq -c
+            exit 1
+          fi
 
       - name: Applying twice changes nothing
         run: |
