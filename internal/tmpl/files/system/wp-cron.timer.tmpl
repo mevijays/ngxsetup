@@ -1,0 +1,18 @@
+##
+# Timer for {{ .Domain }} scheduled tasks.
+##
+
+[Unit]
+Description=Run WordPress scheduled tasks for {{ .Domain }}
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec={{ .Interval }}
+
+# Without jitter every site on the machine would fire its scheduler at the same
+# instant, producing a periodic load spike proportional to the number of sites.
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

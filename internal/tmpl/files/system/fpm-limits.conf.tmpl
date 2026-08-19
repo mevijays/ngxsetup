@@ -1,0 +1,19 @@
+##
+# Resource ceiling for {{ .Domain }}.
+#
+# A template unit cannot vary these per instance, so they live in a per-instance
+# drop-in. This is the second thing per-site services buy beyond isolation: a
+# runaway site is capped at the memory the tuner budgeted for PHP overall,
+# so it cannot grow into the database's share and trigger an OOM kill that
+# takes every site down.
+#
+# The cap is the whole PHP budget rather than a per-site slice on purpose: the
+# pool is already sized to fit inside it, so this never fires during normal
+# operation — it is a backstop against a leak, not a quota.
+##
+
+[Service]
+MemoryMax={{ .MemoryMaxMB }}M
+{{- if .CPUQuotaPercent }}
+CPUQuota={{ .CPUQuotaPercent }}%
+{{- end }}

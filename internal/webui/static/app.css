@@ -1,0 +1,11 @@
+/* Small, genuinely custom bits that don't belong as Tailwind utility classes
+   or components — everything else lives in tailwind-input.css, compiled
+   into vendor/tailwind.css. Kept deliberately tiny. */
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+.log-panel::-webkit-scrollbar-thumb { background: #334155; }
+.log-panel::-webkit-scrollbar-thumb:hover { background: #475569; }

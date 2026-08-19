@@ -1,0 +1,139 @@
+##
+# Core maps.
+#
+# Loaded first so every variable defined here is available to the cache maps,
+# the rate-limit zones and the site definitions that follow.
+##
+
+# Reflects the scheme the client actually used, honouring X-Forwarded-Proto when
+# the request arrives from a trusted proxy. WordPress uses this to decide
+# whether to emit https:// URLs.
+map $http_x_forwarded_proto $ngx_forwarded_scheme {
+    default   $scheme;
+    "https"   "https";
+    "http"    "http";
+}
+
+map $ngx_forwarded_scheme $ngx_https_flag {
+    default   "";
+    "https"   "on";
+}
+
+# Connection header for upstream keepalive and websocket upgrades.
+map $http_upgrade $ngx_connection_upgrade {
+    default   "upgrade";
+    ""        "close";
+}
+
+##
+# Absorb the noise floor before it reaches PHP.
+#
+# These requests are pure cost: vulnerability scanners walking known paths,
+# and clients that send no Host header at all. Answering them with a closed
+# connection costs a few microseconds; letting them reach WordPress costs a
+# PHP worker and a database round trip each.
+#
+# Curated by hand rather than pulled from one of the giant community
+# blocklists (some list "thousands of bad user-agents") because a static
+# binary has nowhere to fetch updates from at request time, and a multi-MB
+# blocklist compiled into every regex match is its own performance cost on
+# the request path this exists to protect. This covers the tools an
+# unauthenticated attacker actually runs against a WordPress front end;
+# extend it in the site's .custom.conf if a specific threat shows up in logs.
+##
+map $http_user_agent $ngx_bad_agent {
+    default   0;
+    ""        1;   # no real browser sends an empty User-Agent
+
+    # Vulnerability scanners, exploitation frameworks and brute-forcers.
+    "~*(?:nikto|sqlmap|nmap|masscan|zgrab2?|dirbuster|gobuster|feroxbuster|wpscan|havij|acunetix|netsparker|nessus|openvas|nuclei|w3af|arachni|metasploit|hydra|dirb|whatweb|jorgee|skipfish|wfuzz|fimap|sn1per|commix|joomscan|cmsmap|droopescan|webshag|paros|grabber|nstalker|nsauditor|webinspect|appscan|beef|libwhisker|blexbot-exploit)" 1;
+
+    # Attack payloads carried inside the User-Agent header itself. A real
+    # client's UA identifies software; one of these is trying to reach an
+    # interpreter — classic Shellshock CGI vector (`() {`, written below as
+    # \x7b so the literal brace never appears in this config file), or a
+    # probe hoping some downstream log line, admin panel or WAF-less script
+    # evaluates the header unescaped.
+    "~*(?:\(\)\s*\x7b|<\?php|<\s*script|union(?:\s|%20)+select|base64_decode\(|passthru\(|shell_exec\(|/etc/passwd|\.\./\.\./\.\.)" 1;
+}
+
+##
+# Long-running referrer-spam campaigns — bots that never actually crawl the
+# site, only send a forged Referer hoping the operator checks analytics,
+# notices the domain, and visits it. Harmless to a server's security, but
+# free to block and it keeps traffic reports honest. Names here are the ones
+# that have persisted across referrer-spam waves since Google Analytics
+# "ghost spam" made this common; extend the same way as $ngx_bad_agent above.
+##
+map $http_referer $ngx_bad_referer {
+    default 0;
+    "~*(?:semalt\.com|buttons-for-website\.com|best-seo-offer\.com|get-free-traffic-now\.com|econom\.co|ilovevitaly|kambasoft\.com|dailyrank\.net|7makemoneyonline\.com|100dollars-seo\.com|4webmasters\.org|sitevaluation\.org|traffic2money\.com|free-social-buttons\.com|social-buttons\.com|trafficmonetizer\.org|ranksonic\.info|success-seo\.com|darodar\.com|hulfingtonpost\.com|priceg\.com|myftpupload\.com|hvac\.pw|blackhatworth\.com)" 1;
+}
+
+##
+# AI-training-data crawlers and SEO/backlink-analysis crawlers. Deliberately
+# separate from $ngx_bad_agent: nothing here is attacking the site, so it is
+# not part of the default security posture — it is a content-policy choice
+# ("should a third party's product get to crawl this site for free?") that
+# only the operator can make, via `block_scraper_bots`.
+##
+map $http_user_agent $ngx_scraper_bot {
+    default 0;
+
+    # AI-training / AI-answer-engine crawlers.
+    "~*(?:GPTBot|ChatGPT-User|OAI-SearchBot|CCBot|ClaudeBot|Claude-Web|anthropic-ai|Bytespider|Amazonbot|Applebot-Extended|Google-Extended|FacebookBot|Meta-ExternalAgent|Meta-ExternalFetcher|Diffbot|ImagesiftBot|Omgilibot|Omgili|YouBot|Timpibot|cohere-ai|PerplexityBot|Perplexity-User|ICC-Crawler)" 1;
+
+    # SEO / backlink-analysis crawlers — high request volume that serves a
+    # third party's product, not this site's own visitors.
+    "~*(?:AhrefsBot|SemrushBot|MJ12bot|DotBot|BLEXBot|MegaIndex|DataForSeoBot|SeekportBot|SerpstatBot|PetalBot|CensysInspect|ZoominfoBot|Mail\.RU_Bot)" 1;
+}
+
+server {
+    # Requests to the bare IP, or with an unrecognised Host, land here rather
+    # than on whichever site happens to sort first. Without an explicit
+    # default_server that is exactly what happens, and it is how a site ends up
+    # answering for domains it does not own.
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    access_log /var/log/nginx/default.access.log main buffer=32k flush=10s;
+
+    # A domain being provisioned needs to answer an ACME challenge before its
+    # own vhost exists.
+    location ^~ /.well-known/acme-challenge/ {
+        root {{ .ACMERoot }};
+        default_type "text/plain";
+        allow all;
+    }
+
+    # nginx's own connection/request counters, for the web UI's live
+    # performance graphs (ngxsetup top and the "Live Stats" page). Lives on
+    # the default_server rather than any one site's block, since it reports
+    # for the whole worker fleet, not a single vhost — and loopback-only, so
+    # it is reachable for local polling but never from the internet.
+    location = /ngxsetup-nginx-status {
+        stub_status;
+        access_log off;
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+    }
+
+    # 444 closes the connection without a response. There is nothing useful to
+    # say to a request for a site this server does not host.
+    location / {
+        return 444;
+    }
+}
+{{ if .RejectHandshake }}
+
+server {
+    # Unknown SNI over TLS. Rejecting at the handshake means no certificate is
+    # presented and no site name is disclosed.
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
+}
+{{ end }}

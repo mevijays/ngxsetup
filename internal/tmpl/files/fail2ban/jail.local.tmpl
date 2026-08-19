@@ -1,0 +1,93 @@
+##
+# fail2ban jails
+#
+# Written to jail.d/ rather than by copying jail.conf to jail.local and
+# appending, which is what the previous setup did on every run — producing a
+# file with the same section defined repeatedly and unpredictable precedence.
+#
+# These jails read the per-site nginx access logs. That only works because
+# access logging is enabled; it was globally disabled in the previous nginx
+# configuration, so no jail could ever have matched a single line.
+##
+
+[DEFAULT]
+backend  = {{ .Backend }}
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+{{- if .IgnoreIPs }}
+ignoreip = {{ .IgnoreIPs }}
+{{- end }}
+
+# Repeat offenders earn exponentially longer bans, capped at a week.
+bantime.increment = true
+bantime.factor = 2
+bantime.maxtime = 1w
+
+[sshd]
+enabled  = true
+# sshd logs to the journal, not a file, on any current Debian or Ubuntu — the
+# only jail here for which the systemd backend is actually correct.
+backend  = systemd
+maxretry = 4
+bantime  = 2h
+
+[nginx-http-auth]
+# Disabled: this stock jail matches nginx's own HTTP Basic Auth failure
+# messages, and ngxsetup never configures Basic Auth anywhere — it has
+# nothing to ever match. Left enabled it is pure liability rather than
+# defense: confirmed live, on a freshly set-up box with no sites yet
+# registered, its logpath glob (*.error.log, matching only per-site logs
+# this tool creates once a site exists) expanded to zero files, and
+# fail2ban's "have not found any log file" for that one jail aborted the
+# *entire* server's startup — every jail below it included, sshd's own
+# brute-force protection along with it.
+enabled = false
+logpath = /var/log/nginx/*.error.log
+
+[nginx-limit-req]
+# Fires when a client keeps hitting the rate limits defined in nginx. Being
+# throttled once is normal; being throttled repeatedly is a bot.
+enabled  = true
+# Two paths, not one: the per-site glob (created once a site exists) plus
+# nginx's own top-level error.log, which the package itself creates before
+# any site is ever added. Without that second path this jail hits the same
+# "zero sites yet -> glob matches nothing -> fail2ban refuses to start at
+# all" failure nginx-http-auth's disabled comment above describes — a fresh
+# box with no sites is the normal state right after `ngxsetup setup`, not
+# an edge case worth accepting that failure for.
+logpath  = /var/log/nginx/*.error.log
+           /var/log/nginx/error.log
+maxretry = 20
+findtime = 5m
+bantime  = 1h
+
+[ngxsetup-wp-login]
+enabled  = true
+port     = http,https
+filter   = ngxsetup-wp-login
+logpath  = /var/log/nginx/*.access.log
+maxretry = 8
+findtime = 10m
+bantime  = 4h
+
+[ngxsetup-xmlrpc]
+enabled  = true
+port     = http,https
+filter   = ngxsetup-xmlrpc
+logpath  = /var/log/nginx/*.access.log
+maxretry = 3
+findtime = 10m
+bantime  = 24h
+
+[ngxsetup-scanner]
+# Probes for paths that exist only in other stacks — phpMyAdmin at guessed
+# locations, .env files, admin panels. A client asking for these is enumerating,
+# not browsing.
+enabled  = true
+port     = http,https
+filter   = ngxsetup-scanner
+logpath  = /var/log/nginx/*.access.log
+maxretry = 6
+findtime = 5m
+bantime  = 24h

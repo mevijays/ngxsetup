@@ -1,0 +1,43 @@
+##
+# TLS
+#
+# TLS 1.2 and 1.3 only. The previous configuration enabled TLS 1.0 and 1.1,
+# both of which have been deprecated since RFC 8996 and fail PCI DSS.
+##
+
+ssl_protocols TLSv1.2 TLSv1.3;
+
+# Cipher selection is left to the client. Modern clients order their
+# preferences by what their hardware actually accelerates — a phone without
+# AES-NI is faster on ChaCha20 — so imposing a server order makes those clients
+# slower, not safer. Every cipher below provides forward secrecy and AEAD.
+ssl_prefer_server_ciphers off;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+
+# Only ECDHE key exchange is offered, so no Diffie-Hellman parameter file is
+# needed. Generating one takes minutes and buys nothing here.
+ssl_ecdh_curve X25519:prime256v1:secp384r1;
+
+ssl_session_cache   shared:SSL:{{ .Plan.Nginx.SSLSessionCacheMB }}m;
+ssl_session_timeout 1d;
+
+# Session tickets are disabled: with a long-lived server ticket key they
+# undermine the forward secrecy the ECDHE ciphers above exist to provide.
+ssl_session_tickets off;
+
+# OCSP stapling saves the client a round trip to the CA on every new
+# connection, but only a CA-issued certificate has a CA to ask. Turning it on
+# here unconditionally would enable it for self-signed sites too, where nginx
+# would then reject it with "issuer certificate not found" on every single
+# reload — confirmed live, on a real server, where it fired on every reload
+# regardless of whether anything else changed. ssl_stapling and
+# ssl_stapling_verify are therefore set per-site (see site.conf.tmpl), only
+# for sites with a real, CA-chained certificate. The resolver stays global:
+# it is inert when no site block actually requests stapling, and every site
+# that does needs the same one.
+resolver         {{ .Resolvers }} valid=300s ipv6=off;
+resolver_timeout 5s;
+
+# TLS 1.3 early data is not enabled. It is replayable by design, and WordPress
+# has no protection against a replayed request.
+ssl_early_data off;

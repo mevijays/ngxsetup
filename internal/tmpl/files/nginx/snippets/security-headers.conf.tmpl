@@ -1,0 +1,33 @@
+##
+# Security response headers.
+#
+# IMPORTANT nginx semantics: add_header directives are inherited from an outer
+# block only when the inner block defines no add_header of its own. Any location
+# that adds a header therefore has to re-include this file, or it silently drops
+# every header set above it. That is why this is a snippet rather than a
+# server-level block, and why the static-asset snippet includes it too.
+##
+
+add_header X-Content-Type-Options   "nosniff" always;
+add_header X-Frame-Options          "SAMEORIGIN" always;
+add_header Referrer-Policy          "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy       "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
+add_header Cross-Origin-Resource-Policy "same-origin" always;
+
+# X-XSS-Protection is set to 0 on purpose. The legacy auditor it enabled was
+# removed from every current browser and, while it existed, introduced its own
+# cross-site leak vectors. Content-Security-Policy is the replacement.
+add_header X-XSS-Protection "0" always;
+
+{{ if .HSTS }}
+# HSTS commits every browser that has seen this header to HTTPS-only access for
+# the stated duration. It cannot be undone quickly, so it is applied only to
+# sites with a real certificate.
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+{{ end }}
+{{- if .ContentSecurityPolicy }}
+add_header Content-Security-Policy "{{ .ContentSecurityPolicy }}" always;
+{{- end }}
+
+# The previous stack advertised `X-Powered-By: fastweb`. Server identification
+# headers only help attackers fingerprint the stack; nothing is emitted here.

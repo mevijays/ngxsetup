@@ -1,0 +1,219 @@
+##
+# {{ .Plan.DB.Variant }} tuning
+#
+# Written as a high-numbered drop-in so it loads after the distribution's own
+# configuration and overrides it, without replacing a packaged file. Deleting
+# this one file restores the stock configuration exactly — which is what makes
+# `ngxsetup tune --rollback` reliable.
+#
+# The previous tuner overwrote /etc/mysql/mysql.conf.d/mysqld.cnf directly with
+# MySQL-8-only directives, on a stack whose default database is MariaDB. Those
+# directives prevent MariaDB from starting at all.
+##
+
+[mysqld]
+
+##
+# Buffer pool — the single most important setting. Everything InnoDB reads
+# passes through it, so a pool large enough to hold the working set turns disk
+# reads into memory reads.
+##
+innodb_buffer_pool_size  = {{ mem .Plan.DB.BufferPoolMB }}
+innodb_buffer_pool_chunk_size = {{ mem .Plan.DB.BufferPoolChunkMB }}
+{{- if gt .Plan.DB.BufferPoolInstances 0 }}
+innodb_buffer_pool_instances = {{ .Plan.DB.BufferPoolInstances }}
+{{- end }}
+
+# Reload the pool's contents on restart so a restarted server is warm rather
+# than spending the first minutes of traffic faulting pages back in.
+innodb_buffer_pool_dump_at_shutdown = 1
+innodb_buffer_pool_load_at_startup  = 1
+innodb_buffer_pool_dump_pct = 40
+
+##
+# Redo log. Sized against the buffer pool: too small and InnoDB stalls on
+# checkpoint flushes under write load, too large and crash recovery drags.
+##
+{{- if .Plan.DB.UseRedoLogCapacity }}
+innodb_redo_log_capacity = {{ mem .Plan.DB.LogFileSizeMB }}
+{{- else }}
+innodb_log_file_size = {{ mem .Plan.DB.LogFileSizeMB }}
+{{- end }}
+innodb_log_buffer_size = {{ mem .Plan.DB.LogBufferMB }}
+
+##
+# Durability.
+#
+# A value of 2 flushes the log to the OS on commit but leaves the fsync to the
+# once-per-second background thread. A database process crash loses nothing; an
+# unclean host shutdown can lose up to one second of writes. For a WordPress
+# site that is a comment or a post revision, and it removes an fsync from every
+# request that writes — the difference is large on any storage.
+##
+innodb_flush_log_at_trx_commit = {{ .Plan.DB.FlushLogAtTrxCommit }}
+
+# Bypass the OS page cache: it would otherwise hold a second copy of pages the
+# buffer pool already has.
+innodb_flush_method = {{ .Plan.DB.FlushMethod }}
+innodb_file_per_table = 1
+innodb_open_files = {{ .Plan.DB.TableOpenCache }}
+
+##
+# I/O, sized from the detected storage class.
+##
+innodb_io_capacity      = {{ .Plan.DB.IOCapacity }}
+innodb_io_capacity_max  = {{ .Plan.DB.IOCapacityMax }}
+innodb_flush_neighbors  = {{ .Plan.DB.FlushNeighbors }}
+innodb_read_io_threads  = {{ .Plan.DB.ReadIOThreads }}
+innodb_write_io_threads = {{ .Plan.DB.WriteIOThreads }}
+innodb_purge_threads    = {{ .Plan.DB.PurgeThreads }}
+
+# WordPress deadlocks on option updates under concurrency far less often with a
+# short wait than with the 50-second default, and a fast failure is easier to
+# retry than a stalled request holding a PHP worker.
+innodb_lock_wait_timeout = 30
+
+# WordPress search needs to match three-letter words; the default minimum of
+# three silently drops them from the index.
+innodb_ft_min_token_size = 2
+
+##
+# Connections.
+#
+# Sized from the number of PHP workers that can exist, plus headroom for
+# wp-cli, wp-cron and administrative sessions. Each idle connection still costs
+# per-thread buffers, so a large ceiling is not free.
+##
+max_connections   = {{ .Plan.DB.MaxConnections }}
+thread_cache_size = {{ .Plan.DB.ThreadCacheSize }}
+back_log          = 512
+max_allowed_packet = {{ mem .Plan.DB.MaxAllowedPacketMB }}
+interactive_timeout = 300
+wait_timeout        = 300
+
+# Every connection is local over a unix socket. Leaving DNS resolution on adds
+# a reverse lookup to connection setup, and turns a slow resolver into a slow
+# site.
+skip_name_resolve = 1
+
+##
+# Table caches. WordPress plus plugins is typically 30-80 tables per site.
+##
+table_open_cache       = {{ .Plan.DB.TableOpenCache }}
+table_definition_cache = {{ .Plan.DB.TableDefCache }}
+
+##
+# Per-connection buffers.
+#
+# These are allocated per connection, so every megabyte here is multiplied by
+# max_connections in the worst case. They are deliberately modest.
+##
+sort_buffer_size     = {{ .Plan.DB.SortBufferKB }}K
+join_buffer_size     = {{ .Plan.DB.JoinBufferKB }}K
+read_buffer_size     = {{ .Plan.DB.ReadBufferKB }}K
+read_rnd_buffer_size = {{ .Plan.DB.ReadRndBufferKB }}K
+
+##
+# In-memory temporary tables. WordPress meta and taxonomy queries create these
+# constantly; spilling them to disk is a common source of slow admin screens.
+# Also per-connection, hence the ceiling.
+##
+tmp_table_size      = {{ mem .Plan.DB.TmpTableMB }}
+max_heap_table_size = {{ mem .Plan.DB.TmpTableMB }}
+
+# MyISAM survives in a few plugin tables; enough key buffer to keep their
+# indexes resident, and no more.
+key_buffer_size = {{ mem .Plan.DB.KeyBufferMB }}
+
+##
+# Character set. utf8mb4 is the only encoding that stores the full Unicode
+# range, including emoji — the classic "post saved but the emoji vanished" bug
+# is a three-byte utf8 column.
+##
+character-set-server = {{ .Plan.DB.CharacterSet }}
+collation-server     = {{ .Plan.DB.Collation }}
+{{ if .Plan.DB.PerformanceSchema }}
+# Costs roughly 200 MB; worth it on a machine large enough to spare it, because
+# it is the only way to diagnose a lock or I/O problem after the fact.
+performance_schema = ON
+{{- else }}
+# Disabled below 4 GB: its fixed instrumentation cost is memory the buffer pool
+# uses better.
+performance_schema = OFF
+{{- end }}
+{{ if .Plan.DB.Binlog }}
+##
+# Binary logging.
+##
+log_bin = /var/log/mysql/mysql-bin
+binlog_format = ROW
+{{- if eq .Plan.DB.Flavor "mysql" }}
+binlog_expire_logs_seconds = {{ mulSeconds .Plan.DB.BinlogExpireDays }}
+{{- else }}
+expire_logs_days = {{ .Plan.DB.BinlogExpireDays }}
+{{- end }}
+sync_binlog = 0
+server_id = 1
+{{- else }}
+##
+# Binary logging is off.
+#
+# It exists for replication and point-in-time recovery. A single-server
+# WordPress host does neither, so enabling it only buys write amplification and
+# a log directory that fills the disk. Turn it on with `--enable-binlog` if you
+# add a replica or want PITR.
+##
+skip-log-bin
+
+# The distribution's own packaged config sets expire_logs_days unconditionally
+# (confirmed on Ubuntu's mariadb-server), which is meaningless without
+# log_bin and produces a harmless but confusing startup warning — "You need
+# to use --log-bin to make --expire-logs-days work" — on every single start.
+# Overriding it to 0 here is what actually silences that, since dropping the
+# line entirely would leave the distribution default in effect.
+expire_logs_days = 0
+{{- end }}
+
+##
+# Slow query log. Off by default in most distributions, which means nobody ever
+# finds the plugin issuing the query that is making the site slow.
+##
+slow_query_log = {{ if .Plan.DB.SlowQueryLog }}1{{ else }}0{{ end }}
+slow_query_log_file = /var/log/mysql/slow.log
+long_query_time = {{ .Plan.DB.SlowQueryTime }}
+{{- if eq .Plan.DB.Flavor "mariadb" }}
+log_slow_verbosity = query_plan,explain
+
+##
+# MariaDB's query cache is disabled deliberately. It is protected by a single
+# global mutex, so on a multi-core machine under concurrency it costs more in
+# contention than it saves in lookups, and any write to a table invalidates
+# every cached query against it — which for WordPress means constantly.
+##
+query_cache_type = 0
+query_cache_size = 0
+{{- end }}
+
+##
+# Strict SQL mode is not imposed. WordPress core and a great many plugins issue
+# statements that fail under STRICT_TRANS_TABLES, and the failure surfaces as a
+# blank admin screen rather than an error.
+##
+sql_mode = "NO_ENGINE_SUBSTITUTION"
+
+##
+# [client] is read by every client-family program: mysql, mysqldump,
+# mysqladmin, mysqlslap, mysqlcheck. default-character-set belongs in [mysql]
+# instead — confirmed live, where setting it in [client] made mysqlslap
+# refuse to start at all ("unknown variable 'default-character-set'"), a
+# benchmarking tool an operator running this stack would reasonably reach
+# for. [mysql] is read only by the interactive mysql/mariadb CLI, which is
+# the one place a default charset for ad-hoc sessions actually matters.
+##
+[mysql]
+default-character-set = {{ .Plan.DB.CharacterSet }}
+
+[mysqldump]
+quick
+quote-names
+max_allowed_packet = {{ mem .Plan.DB.MaxAllowedPacketMB }}

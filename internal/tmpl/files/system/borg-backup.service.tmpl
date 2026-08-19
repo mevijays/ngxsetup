@@ -1,0 +1,22 @@
+##
+# Scheduled off-box backup via BorgBackup.
+#
+# Calls back into ngxsetup itself rather than reimplementing the backup
+# logic here — the same command an operator would run by hand from a
+# terminal, just on a timer. Its output lands in the journal
+# (`journalctl -u ngxsetup-borg.service`), which the web UI's log viewer
+# can already show.
+##
+
+[Unit]
+Description=Scheduled Borg backup (ngxsetup)
+After=network-online.target {{ .DBUnit }}
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ .ExecPath }} borg backup{{ if .Prune }} --prune{{ end }}
+
+# A stuck or very slow remote repository must not run forever, and must not
+# overlap with the next scheduled run.
+TimeoutStartSec=7200

@@ -1,0 +1,45 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Build
+        run: |
+          mkdir -p dist
+          version="${GITHUB_REF_NAME}"
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
+              go build -trimpath \
+                -ldflags "-s -w -X ngxsetup/internal/build.Version=${version}" \
+                -o "dist/ngxsetup-linux-${arch}" ./cmd/ngxsetup
+          done
+
+      - name: Checksums
+        run: cd dist && sha256sum ngxsetup-* > SHA256SUMS
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ngxsetup-linux-amd64
+            dist/ngxsetup-linux-arm64
+            dist/SHA256SUMS
+          generate_release_notes: true

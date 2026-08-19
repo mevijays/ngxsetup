@@ -1,0 +1,36 @@
+##
+# Log rotation for the managed stack.
+#
+# Per-site access logs grow quickly once access logging is on, and a full disk
+# takes down nginx, PHP and the database at once.
+##
+
+/var/log/nginx/*.log {
+    daily
+    rotate {{ .KeepDays }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    sharedscripts
+    create 0640 www-data adm
+    postrotate
+        # USR1 makes nginx reopen its log files without dropping connections.
+        [ -f /run/nginx.pid ] && kill -USR1 $(cat /run/nginx.pid)
+    endscript
+}
+
+/var/log/php/*.log {
+    daily
+    rotate {{ .KeepDays }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 root adm
+    postrotate
+        # USR1 tells the FPM master to reopen its logs; it does not recycle
+        # workers, so in-flight requests are unaffected.
+        [ -f /run/php/php{{ .PHPVersion }}-fpm.pid ] && kill -USR1 $(cat /run/php/php{{ .PHPVersion }}-fpm.pid)
+    endscript
+}

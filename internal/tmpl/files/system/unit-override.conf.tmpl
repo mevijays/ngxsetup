@@ -1,0 +1,20 @@
+##
+# systemd drop-in for {{ .Unit }}
+#
+# systemd units do not read /etc/security/limits.d, so a descriptor limit set
+# there has no effect on a service. This is the only place that works.
+##
+
+[Service]
+LimitNOFILE={{ .Nofile }}
+{{- if .Restart }}
+Restart=on-failure
+RestartSec=5s
+{{- end }}
+{{- if .OOMAdjust }}
+
+# Under memory pressure the kernel prefers to kill the largest process, which
+# is the database. Losing a PHP worker is recoverable; losing the database
+# takes every site down at once.
+OOMScoreAdjust={{ .OOMAdjust }}
+{{- end }}

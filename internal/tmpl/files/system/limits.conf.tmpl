@@ -1,0 +1,17 @@
+##
+# File descriptor limits.
+#
+# nginx cannot honour worker_rlimit_nofile beyond the hard limit its unit
+# imposes, so both have to agree. systemd units ignore
+# /etc/security/limits.d entirely — those apply to PAM logins — which is why
+# ngxsetup also writes per-unit drop-ins.
+##
+
+*        soft nofile {{ .Plan.Limits.NginxNofile }}
+*        hard nofile {{ .Plan.Limits.NginxNofile }}
+root     soft nofile {{ .Plan.Limits.NginxNofile }}
+root     hard nofile {{ .Plan.Limits.NginxNofile }}
+www-data soft nofile {{ .Plan.Limits.PHPNofile }}
+www-data hard nofile {{ .Plan.Limits.PHPNofile }}
+mysql    soft nofile {{ .Plan.Limits.DBNofile }}
+mysql    hard nofile {{ .Plan.Limits.DBNofile }}

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ngxsetup</title>
+<link rel="stylesheet" href="/vendor/tailwind.css">
+<link rel="stylesheet" href="/vendor/fontawesome.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased">
+
+<div class="flex h-screen overflow-hidden">
+  <nav class="w-56 shrink-0 bg-white border-r border-slate-200 flex flex-col py-4 px-3 overflow-y-auto">
+    <div class="flex items-center gap-2 px-2 pb-4 mb-2 border-b border-slate-100">
+      <i class="fa-solid fa-server text-indigo-600 text-lg"></i>
+      <span class="font-semibold text-slate-900">ngxsetup</span>
+      <span id="app-version-badge" class="text-[10px] text-slate-400 font-mono ml-auto"></span>
+    </div>
+    <button class="nav-item" data-view="dashboard"><i class="fa-solid fa-gauge-high"></i><span>Dashboard</span></button>
+    <button class="nav-item" data-view="sites"><i class="fa-solid fa-globe"></i><span>Sites</span></button>
+    <button class="nav-item" data-view="migrate"><i class="fa-solid fa-right-left"></i><span>Migration</span></button>
+    <button class="nav-item" data-view="stats"><i class="fa-solid fa-chart-line"></i><span>Live Stats</span></button>
+    <button class="nav-item" data-view="logs"><i class="fa-solid fa-file-lines"></i><span>Log Viewer</span></button>
+    <button class="nav-item" data-view="security"><i class="fa-solid fa-shield-halved"></i><span>Security</span></button>
+    <button class="nav-item" data-view="backups"><i class="fa-solid fa-database"></i><span>Backups</span></button>
+    <button class="nav-item" data-view="tuning"><i class="fa-solid fa-sliders"></i><span>Tuning</span></button>
+    <button class="nav-item" data-view="config"><i class="fa-solid fa-gear"></i><span>Config</span></button>
+    <button class="nav-item" data-view="bootstrap"><i class="fa-solid fa-toolbox"></i><span>Setup &amp; Hardening</span></button>
+    <button class="nav-item text-rose-600 hover:bg-rose-50" data-view="danger"><i class="fa-solid fa-triangle-exclamation"></i><span>Danger Zone</span></button>
+    <div class="flex-1"></div>
+    <div class="px-3 py-2 text-xs text-slate-400 border-t border-slate-100 mt-2 pt-3">
+      <i class="fa-solid fa-lock-open mr-1"></i>No login — this session ends
+      with the terminal that started it.
+      <div class="mt-2 pt-2 border-t border-slate-100">
+        <div id="app-maintainer"><i class="fa-solid fa-user mr-1"></i>Maintained by Vijay Vishwakarma</div>
+        <a id="app-repo-link" href="https://github.com/sharmavijay86/ngxsetup" target="_blank" rel="noopener noreferrer" class="text-indigo-500 hover:underline break-all block mt-1">
+          <i class="fa-solid fa-code-branch mr-1"></i>github.com/sharmavijay86/ngxsetup
+        </a>
+      </div>
+    </div>
+  </nav>
+  <main id="content" class="flex-1 overflow-y-auto p-6"></main>
+</div>
+
+<script src="/vendor/chart.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

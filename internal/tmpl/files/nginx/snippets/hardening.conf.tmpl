@@ -1,0 +1,64 @@
+##
+# Path hardening for WordPress document roots.
+#
+# Ordering matters: nginx evaluates regex locations in the order they appear,
+# so the ACME and well-known allowances must precede the dotfile denial.
+##
+
+# Certificate authorities and browsers fetch from /.well-known; it must stay
+# reachable even though it begins with a dot.
+location ^~ /.well-known/ {
+    allow all;
+    access_log off;
+}
+
+# Version control metadata, editor backups and credentials.
+location ~ /\. {
+    deny all;
+    access_log off;
+    log_not_found off;
+}
+
+# Files that should never be served even when they sit inside the web root.
+# wp-config.php is the one that matters: a misconfigured PHP handler that
+# stops executing it would otherwise serve the database password as text.
+location ~* ^/(wp-config\.php|wp-config-sample\.php|readme\.html|license\.txt|liesmich\.html)$ {
+    deny all;
+    access_log off;
+}
+
+location ~* \.(bak|old|orig|original|save|swp|swo|tmp|dist|sql|sql\.gz|tar|tar\.gz|zip|log|ini|conf|sh|env|lock)$ {
+    deny all;
+    access_log off;
+}
+
+# A writable uploads directory is the standard target for a shell upload. Even
+# if a malicious file lands there, it will not be executed.
+location ~* ^/wp-content/uploads/.*\.(php|phtml|php[0-9]|phar|pl|py|cgi|asp|aspx|jsp|sh|shtml|html?|js|swf)$ {
+    deny all;
+    access_log off;
+}
+location ~* ^/wp-content/(uploads|cache)/.*\.php$ {
+    deny all;
+    access_log off;
+}
+
+# Plugin and theme directories frequently ship their own installers and test
+# harnesses. None of them should be reachable over HTTP.
+location ~* ^/wp-content/(plugins|themes)/.*/(tests?|examples?|docs?|composer\.(json|lock)|package\.json|phpunit\.xml.*)$ {
+    deny all;
+    access_log off;
+}
+
+# Directory indexes of the writable tree leak the site's file inventory.
+location ~ ^/wp-content/(uploads|upgrade)/$ {
+    autoindex off;
+    deny all;
+}
+
+# Anything that is not a WordPress entry point has no business executing PHP in
+# the includes directory.
+location ~* ^/wp-includes/.*\.php$ {
+    deny all;
+    access_log off;
+}

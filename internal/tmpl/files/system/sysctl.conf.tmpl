@@ -1,0 +1,14 @@
+##
+# Kernel tuning for a WordPress web server.
+#
+# Written to /etc/sysctl.d/ as a drop-in rather than appended to
+# /etc/sysctl.conf. The previous approach appended on every run, so a machine
+# provisioned three times carried three conflicting copies of every setting and
+# there was no way to remove them.
+##
+{{ range .Plan.Sysctl }}
+{{- if .Comment }}
+# {{ .Comment }}
+{{- end }}
+{{ .Key }} = {{ .Value }}
+{{ end }}

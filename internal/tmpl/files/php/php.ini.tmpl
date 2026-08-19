@@ -1,0 +1,109 @@
+;;
+;; ngxsetup PHP configuration ({{ .SAPI }})
+;;
+;; Written as a numbered drop-in rather than by editing php.ini, so a PHP
+;; package upgrade cannot silently revert it and removing this one file
+;; restores the distribution defaults exactly.
+;;
+
+[PHP]
+{{- if eq .SAPI "cli" }}
+;; The CLI runs one task at a time and is used for imports, migrations and
+;; backups, which legitimately need far more headroom than a web request.
+memory_limit = {{ mem .Plan.PHP.CLIMemoryLimitMB }}
+max_execution_time = 0
+{{- else }}
+memory_limit = {{ mem .Plan.PHP.MemoryLimitMB }}
+max_execution_time = {{ .Plan.PHP.MaxExecutionTime }}
+max_input_time = {{ .Plan.PHP.MaxExecutionTime }}
+{{- end }}
+
+upload_max_filesize = {{ mem .Plan.PHP.UploadMaxMB }}
+;; post_max_size must exceed upload_max_filesize or a maximum-size upload is
+;; rejected with an empty $_POST and no error the user can act on.
+post_max_size = {{ mem (add .Plan.PHP.UploadMaxMB 8) }}
+max_file_uploads = 50
+max_input_vars = {{ .Plan.PHP.MaxInputVars }}
+
+;; Removes the X-Powered-By header. Advertising the exact PHP version tells a
+;; scanner which CVEs to try first.
+expose_php = Off
+
+display_errors = Off
+display_startup_errors = Off
+log_errors = On
+error_reporting = E_ALL & ~E_DEPRECATED
+
+date.timezone = {{ .Timezone }}
+
+;; Resolving symlinks and relative includes is a large share of WordPress's
+;; syscall traffic; caching it removes most of the stat() calls per request.
+realpath_cache_size = {{ .Plan.PHP.RealpathCacheKB }}k
+realpath_cache_ttl  = {{ .Plan.PHP.RealpathCacheTTL }}
+
+;; nginx handles compression; doing it twice wastes CPU and breaks Content-Length.
+zlib.output_compression = Off
+output_buffering = 4096
+
+;; Never let PHP infer a script from a path that does not exist. With
+;; fix_pathinfo on, a request for /uploads/photo.jpg/shell.php can be executed
+;; as PHP against the uploaded image.
+cgi.fix_pathinfo = 0
+
+;; Remote URLs remain readable — plugin updates and REST calls need it — but
+;; never includable, which is the vector that turns an LFI bug into RCE.
+allow_url_fopen = On
+allow_url_include = Off
+
+;; Sessions
+session.use_strict_mode = 1
+session.cookie_httponly = 1
+session.cookie_samesite = "Lax"
+session.gc_maxlifetime = 1440
+
+[opcache]
+;; The compiled-bytecode cache. Without it every request re-parses every
+;; WordPress file; with it, PHP throughput on WordPress roughly triples.
+opcache.enable = 1
+opcache.enable_cli = {{ if eq .SAPI "cli" }}0{{ else }}1{{ end }}
+opcache.memory_consumption = {{ .Plan.OPcache.MemoryMB }}
+opcache.interned_strings_buffer = {{ .Plan.OPcache.InternedStringsMB }}
+opcache.max_accelerated_files = {{ .Plan.OPcache.MaxAcceleratedFiles }}
+opcache.max_wasted_percentage = 10
+opcache.revalidate_freq = {{ .Plan.OPcache.RevalidateFreq }}
+
+;; With validation on, PHP checks a file's mtime at most once every
+;; revalidate_freq seconds. Turning it off is faster but means plugin, theme
+;; and core updates do nothing visible until php-fpm is reloaded — a failure
+;; mode that looks like a broken site rather than a stale cache.
+opcache.validate_timestamps = {{ if .Plan.OPcache.ValidateTimestamps }}1{{ else }}0{{ end }}
+
+;; WordPress and several popular plugins read docblock annotations at runtime.
+;; Discarding comments to save memory breaks them in ways that are very hard to
+;; diagnose.
+opcache.save_comments = 1
+opcache.enable_file_override = 1
+opcache.file_cache = {{ .OpcacheFileCache }}
+opcache.file_cache_only = 0
+{{- if .Plan.OPcache.HugeCodePages }}
+
+;; Backs the compiled code with huge pages, cutting TLB misses on a working set
+;; the size of WordPress.
+opcache.huge_code_pages = 1
+{{- end }}
+
+;; JIT is explicitly off. WordPress workloads are I/O- and memory-bound rather
+;; than compute-bound, so the tracing JIT delivers no measurable throughput
+;; gain, and it has a history of segfaults with common extensions. Stating it
+;; here means the setting does not drift with distribution defaults.
+opcache.jit = disable
+opcache.jit_buffer_size = 0
+
+[apcu]
+;; APCu backs the WordPress persistent object cache, which removes the repeated
+;; option and meta queries that dominate an uncached page load.
+apc.enabled = 1
+apc.enable_cli = 1
+apc.shm_size = {{ mem .Plan.OPcache.APCuMB }}
+apc.ttl = 7200
+apc.serializer = php

@@ -1,0 +1,62 @@
+##
+# phpMyAdmin
+#
+# The previous stack mounted phpMyAdmin at /mysql on every single virtual host,
+# unauthenticated, reachable from the internet. That put an unpatched PHP
+# application with direct database access in front of every site on the server,
+# and it is the highest-severity finding in the old configuration.
+#
+# Here it is a separate server on its own port, closed by default, behind an
+# address allowlist and HTTP authentication, running as its own user. It is not
+# mounted on any site.
+##
+
+server {
+    listen {{ .Port }}{{ if .TLS }} ssl{{ end }};
+    listen [::]:{{ .Port }}{{ if .TLS }} ssl{{ end }};
+    server_name _;
+{{- if .TLS }}
+
+    ssl_certificate     {{ .CertPath }};
+    ssl_certificate_key {{ .KeyPath }};
+{{- end }}
+
+    root /usr/share/phpmyadmin;
+    index index.php;
+
+    access_log /var/log/nginx/phpmyadmin.access.log main;
+    error_log  /var/log/nginx/phpmyadmin.error.log warn;
+
+    include snippets/ngxsetup/security-headers.conf;
+
+    # Address allowlist. Nothing outside these ranges gets as far as the login
+    # form, so a phpMyAdmin CVE is not remotely reachable.
+{{- range .AllowList }}
+    allow {{ . }};
+{{- end }}
+    deny all;
+
+    # A second, independent credential in front of the application's own login.
+    auth_basic "Database administration";
+    auth_basic_user_file {{ .HtpasswdPath }};
+
+    # Rate limited like any other login surface.
+    limit_req zone=ngx_login burst=5 nodelay;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ \.php$ {
+        include snippets/ngxsetup/fastcgi-php.conf;
+        fastcgi_pass unix:{{ .SocketPath }};
+    }
+
+    # Directories that ship with the tarball and must never be served.
+    location ~* ^/(?:doc|sql|setup|examples|libraries|templates|tmp|vendor|test)/ {
+        deny all;
+    }
+    location ~* \.(?:md|txt|xml|yml|yaml|json|lock|dist|sh)$ {
+        deny all;
+    }
+}

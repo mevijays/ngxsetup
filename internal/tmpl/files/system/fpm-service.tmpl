@@ -1,0 +1,90 @@
+##
+# Per-site PHP-FPM, kernel-isolated.
+#
+# One instance of this template runs per site (ngxsetup-fpm@<slug>.service),
+# rather than every site sharing the distribution's single php-fpm service.
+# That costs one extra master process per site (~10-15 MB, largely shared
+# between them) and buys a real, kernel-enforced boundary instead of relying
+# on open_basedir — which is a userland check inside PHP and has a long
+# history of bypasses.
+#
+# The isolation comes from the mount namespace below, not from a chroot. That
+# distinction is the whole reason this approach was chosen: a chroot starts
+# empty, so DNS, TLS certificates and glibc's NSS modules must be copied or
+# bind-mounted into every jail and kept in sync with the host forever — get it
+# wrong and WordPress silently loses outbound HTTPS and plugin updates. Here
+# /etc and /usr stay visible read-only, so all of that keeps working with no
+# plumbing, while the site tree is the only writable surface and other sites
+# are not merely unreadable but absent.
+##
+
+[Unit]
+Description=PHP-FPM for %i (ngxsetup, isolated)
+After=network.target {{ .DBUnit }}
+PartOf=ngxsetup-fpm.target
+
+[Service]
+Type=notify
+ExecStart={{ .FPMBinary }} --nodaemonize --fpm-config {{ .FPMConfigDir }}/%i.conf
+ExecReload=/bin/kill -USR2 $MAINPID
+KillMode=mixed
+Restart=on-failure
+RestartSec=5s
+
+##
+# The jail.
+#
+# TemporaryFileSystem replaces /var/www with an empty read-only tmpfs *inside
+# this service's namespace only*, and BindPaths then mounts this one site back
+# into it. The result: a compromised plugin here cannot read another site's
+# wp-config.php because, from inside this namespace, no other site exists on
+# the filesystem at all. Unix permissions already denied that; this removes
+# the directory rather than trusting a permission check.
+##
+TemporaryFileSystem=/var/www:ro
+BindPaths={{ .WebRoot }}/%i
+
+##
+# Everything else is read-only, with the writable surface named explicitly.
+# ReadWritePaths is the complete list of what this service may modify:
+# its own tree, its own logs, and the directory its socket lives in.
+##
+ProtectSystem=strict
+ReadWritePaths={{ .WebRoot }}/%i {{ .PHPLogDir }} {{ .PHPSocketDir }} {{ .RunDir }}
+
+# A private /dev with just null/zero/random/urandom — which is also what makes
+# PHP's random_bytes() keep working without a hand-made device node, the other
+# thing a chroot would have forced us to manage.
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+
+# The master starts as root and drops to the site's user; dropping privileges
+# is unaffected by this, but regaining any — via a setuid binary — is not.
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+RemoveIPC=true
+
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Deliberately NOT set: MemoryDenyWriteExecute. opcache maps executable memory
+# for compiled bytecode, and denying W+X breaks it outright — which would cost
+# far more performance than this setting buys in hardening.
+
+[Install]
+WantedBy=multi-user.target

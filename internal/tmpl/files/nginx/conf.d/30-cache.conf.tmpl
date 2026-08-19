@@ -1,0 +1,155 @@
+##
+# FastCGI micro-cache
+#
+# This is the single most important performance mechanism in the stack. A hit
+# is served from the page cache in RAM without starting a PHP worker or opening
+# a database connection, which is what allows a small machine to absorb traffic
+# that would otherwise need many times the hardware.
+#
+# The decision of what to cache is expressed with map directives rather than
+# `if`. Inside a server context `if` has well-known surprising semantics, and
+# the previous configuration chained six of them.
+##
+
+fastcgi_cache_path /var/cache/nginx/fastcgi
+                   levels=1:2
+                   keys_zone=WORDPRESS:{{ .Plan.Nginx.CacheKeysZoneMB }}m
+                   max_size={{ .Plan.Nginx.CacheMaxSizeMB }}m
+                   inactive={{ .Plan.Nginx.CacheInactive }}
+                   use_temp_path=off;
+
+##
+# 1. Is this visitor logged in, or otherwise holding personal state?
+#
+# Matching on the cookie name prefixes WordPress and WooCommerce actually set.
+# A visitor with any of these must never be served, or have their response
+# stored in, a shared cache.
+##
+map $http_cookie $ngx_private_session {
+    default                          0;
+    "~*wordpress_logged_in_"         1;
+    "~*wp-postpass_"                 1;
+    "~*comment_author_"              1;
+    "~*wordpress_sec_"               1;
+    "~*woocommerce_items_in_cart"    1;
+    "~*woocommerce_cart_hash"        1;
+    "~*wp_woocommerce_session_"      1;
+    "~*edd_items_in_cart"            1;
+}
+
+##
+# 2. Methods that change state are never cacheable.
+##
+map $request_method $ngx_unsafe_method {
+    default  0;
+    POST     1;
+    PUT      1;
+    PATCH    1;
+    DELETE   1;
+}
+
+##
+# 3. Paths that are personal, administrative, or must always be live.
+#
+# Note what is NOT here: sitemaps, feeds and paginated archives are all
+# perfectly cacheable and are among the heaviest pages WordPress generates.
+# The previous configuration excluded them, and excluded every URL carrying
+# any query string at all, which meant almost no real traffic was ever cached.
+##
+map $request_uri $ngx_uncacheable_uri {
+    default                                  0;
+    "~*^/wp-admin/"                          1;
+    "~*^/wp-login\.php"                      1;
+    "~*^/wp-cron\.php"                       1;
+    "~*^/xmlrpc\.php"                        1;
+    "~*^/wp-json/"                           1;
+    "~*^/\?rest_route="                      1;
+    "~*^/(cart|checkout|my-account)/"        1;
+    "~*[?&](preview|nocache)="               1;
+    "~*[?&]wc-ajax="                         1;
+    "~*^/wc-api/"                            1;
+}
+
+map "$ngx_private_session$ngx_unsafe_method$ngx_uncacheable_uri" $skip_cache {
+    default  1;
+    "000"    0;
+}
+
+##
+# 4. Cache key.
+#
+# Campaign and click-tracking parameters change the URL without changing the
+# response. Folding a URL whose query string consists only of such parameters
+# onto its clean form turns every shared social link into a cache hit instead
+# of a cache miss.
+##
+map $args $ngx_cache_args {
+    default  $args;
+    ""       "";
+    "~*^(?:(?:utm_[a-z_]+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|_ga|_gl|igshid|ref|referrer)=[^&]*)(?:&(?:utm_[a-z_]+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|_ga|_gl|igshid|ref|referrer)=[^&]*)*$"  "";
+}
+
+{{ if .CacheVaryDevice }}
+##
+# Device-split cache. Doubles the cache footprint and halves the hit rate, so
+# it is off unless the site serves genuinely different markup to mobile
+# clients. Responsive themes should leave this disabled.
+##
+map $http_user_agent $ngx_device {
+    default                                                            "d";
+    "~*(?:android|iphone|ipod|windows phone|mobile safari|opera mini)" "m";
+}
+{{ end }}
+fastcgi_cache_key "$scheme$request_method$host$uri$ngx_cache_args{{ if .CacheVaryDevice }}$ngx_device{{ end }}";
+
+##
+# 5. Never store a response that is in the act of establishing a session.
+#
+# Belt and braces alongside the cookie map above: if the upstream is setting a
+# WordPress authentication cookie, that response is personal by definition
+# regardless of what the request looked like.
+##
+map $upstream_http_set_cookie $ngx_response_is_private {
+    default                     0;
+    "~*wordpress_logged_in_"    1;
+    "~*wp-postpass_"            1;
+    "~*woocommerce_"            1;
+}
+
+##
+# 6. Serving policy.
+#
+# cache_lock collapses a stampede of concurrent misses for the same key into a
+# single upstream request; background_update plus use_stale means an expired
+# entry is served immediately while it is refreshed behind the scenes. Together
+# they are why a cache expiry does not become a latency spike.
+##
+fastcgi_cache_lock            on;
+fastcgi_cache_lock_timeout    5s;
+fastcgi_cache_lock_age        5s;
+fastcgi_cache_background_update on;
+fastcgi_cache_revalidate      on;
+#
+# Only the tokens fastcgi_cache_use_stale actually recognises: unlike
+# proxy_cache_use_stale, it has no http_502/http_504 (those describe an
+# upstream HTTP proxy being unreachable, not a condition a FastCGI backend
+# can report) — nginx rejects the directive outright if they're present,
+# which fails config validation on every machine, not just some.
+fastcgi_cache_use_stale       error timeout invalid_header updating
+                              http_500 http_503;
+fastcgi_cache_min_uses        1;
+
+##
+# WordPress emits no-cache headers on every response because it cannot know
+# about this cache. Ignoring them here is safe only because the maps above
+# already exclude everything that is genuinely personal.
+##
+fastcgi_ignore_headers Cache-Control Expires Set-Cookie;
+
+fastcgi_buffers        {{ .Plan.Nginx.FastCGIBuffers }};
+fastcgi_buffer_size    {{ .Plan.Nginx.FastCGIBufferSizeKB }}k;
+fastcgi_busy_buffers_size {{ mulk .Plan.Nginx.FastCGIBufferSizeKB 2 }};
+fastcgi_connect_timeout 10s;
+fastcgi_send_timeout    {{ .Plan.PHP.RequestTerminateTimeout }}s;
+fastcgi_read_timeout    {{ .Plan.PHP.RequestTerminateTimeout }}s;
+fastcgi_keep_conn       on;

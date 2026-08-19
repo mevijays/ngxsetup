@@ -1,0 +1,17 @@
+##
+# Timer for the scheduled Borg backup.
+##
+
+[Unit]
+Description=Timer for scheduled Borg backup (ngxsetup)
+
+[Timer]
+OnCalendar={{ .OnCalendar }}
+Persistent=true
+
+# Without jitter, a fleet of machines all backing up "daily at 3am" would all
+# hit the same remote repository server at the same instant.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

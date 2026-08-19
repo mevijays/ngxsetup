@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Binaries / releases
+/dist/
+/bin/
+
+# Go workspace files
+/go.work
+/go.work.sum
+
+# Coverage
+coverage.*
+
+# Logs
+*.log
+
+# OS / temp
+*.tmp
+*.swp
+*~
+
+# Optional: vendor (uncomment if you use it)
+# /vendor/
+LIVE-TEST-LOG.md

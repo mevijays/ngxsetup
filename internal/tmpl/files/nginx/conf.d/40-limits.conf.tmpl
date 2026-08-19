@@ -1,0 +1,39 @@
+##
+# Rate limiting
+#
+# The previous configuration defined a limit_req zone and never referenced it
+# from any location, so it had no effect. These zones are applied in the site
+# template: the general zone on PHP-executing requests, the login zone on the
+# authentication endpoints that attract brute-force traffic.
+#
+# Static assets are deliberately not rate limited — a single page load can pull
+# fifty of them, and counting those against a per-second budget throttles real
+# visitors while barely inconveniencing an attacker.
+##
+
+# $limit_key is empty for allowlisted addresses, which excludes them from
+# counting: a zone keyed on an empty value ignores the request entirely.
+geo $ngx_limit_exempt {
+    default 0;
+    127.0.0.1/32 1;
+    ::1/128      1;
+{{- range .TrustedNetworks }}
+    {{ . }} 1;
+{{- end }}
+}
+
+map $ngx_limit_exempt $ngx_limit_key {
+    0 $binary_remote_addr;
+    1 "";
+}
+
+limit_req_zone $ngx_limit_key zone=ngx_general:10m rate={{ .Plan.Nginx.ReqRateGeneral }}r/s;
+limit_req_zone $ngx_limit_key zone=ngx_login:10m   rate={{ .Plan.Nginx.ReqRateLogin }}r/m;
+limit_conn_zone $ngx_limit_key zone=ngx_conn:10m;
+
+# 429 is the honest status for a rate limit. The previous configuration
+# returned 403, which tells clients and crawlers to stop trying permanently
+# rather than to back off.
+limit_req_status  429;
+limit_conn_status 429;
+limit_req_log_level warn;

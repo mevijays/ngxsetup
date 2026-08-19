@@ -1,0 +1,30 @@
+##
+# Scheduled WordPress tasks for {{ .Domain }}
+#
+# WordPress fires its scheduler from visitor requests by default. That makes an
+# unlucky reader pay for whatever maintenance happens to be due, and it means
+# scheduled work simply does not run on a quiet site. Running it from a timer
+# instead makes both problems go away.
+##
+
+[Unit]
+Description=WordPress scheduled tasks for {{ .Domain }}
+After=network.target {{ .DBUnit }}
+
+[Service]
+Type=oneshot
+User={{ .User }}
+Group={{ .User }}
+WorkingDirectory={{ .Root }}
+ExecStart=/usr/local/bin/wp cron event run --due-now --path={{ .Root }}
+
+# A stuck cron job must not accumulate: without a timeout, overlapping runs
+# pile up until the machine runs out of PHP workers.
+TimeoutStartSec=300
+
+# The scheduler needs nothing beyond its own site's files.
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+ReadWritePaths={{ .SiteBase }}

@@ -1,0 +1,21 @@
+;;
+;; PHP-FPM master configuration for {{ .Domain }}.
+;;
+;; Each site runs its own FPM master (see ngxsetup-fpm@.service) rather than
+;; sharing the distribution's, so each needs its own top-level config naming
+;; its own pid file, error log, and exactly one pool.
+;;
+
+[global]
+pid = {{ .PidFile }}
+error_log = {{ .ErrorLog }}
+daemonize = no
+
+;; If this site's workers start dying repeatedly, stop restarting them rather
+;; than spinning: a crash loop that keeps respawning turns one broken site
+;; into sustained load on a box hosting others.
+emergency_restart_threshold = 10
+emergency_restart_interval = 1m
+process_control_timeout = 10s
+
+include = {{ .PoolFile }}

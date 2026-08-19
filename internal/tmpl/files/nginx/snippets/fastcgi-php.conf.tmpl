@@ -1,0 +1,38 @@
+##
+# FastCGI parameters for PHP.
+#
+# This file exists mostly to get SCRIPT_FILENAME right. The previous
+# configuration set it to
+#
+#     $document_root$fastcgi_script_name$request_filename
+#
+# which concatenates a relative path onto an absolute one and yields a path that
+# exists nowhere. It worked only because PHP-FPM fell back to resolving the
+# request itself — which is exactly the behaviour that makes path-info attacks
+# possible.
+##
+
+fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+
+# Refuse to hand PHP-FPM anything that is not a real file on disk. Combined
+# with the split above, this is the defence against a request for
+# /uploads/evil.jpg/x.php being executed as PHP.
+try_files $fastcgi_script_name =404;
+
+include fastcgi_params;
+
+fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+fastcgi_param PATH_INFO       $fastcgi_path_info;
+fastcgi_param DOCUMENT_ROOT   $document_root;
+
+# WordPress builds canonical URLs from SERVER_NAME. Behind a proxy that must
+# reflect the requested host, not the matched server_name.
+fastcgi_param SERVER_NAME $host;
+
+# Tell PHP the original scheme so is_ssl() is correct when TLS terminates at a
+# CDN. Without this, WordPress generates http:// asset URLs on an https:// page
+# and browsers block them as mixed content.
+fastcgi_param HTTPS $ngx_https_flag if_not_empty;
+
+fastcgi_index index.php;
+fastcgi_intercept_errors off;
