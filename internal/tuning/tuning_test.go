@@ -428,6 +428,31 @@ func TestComputeIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestCacheMaxSizeToleratesDiskDrift is a regression test for a real bug
+// found live in CI: two `tune --apply` runs a few minutes apart on an
+// otherwise-unchanged machine rewrote the FastCGI cache config (and
+// reloaded nginx) purely because free disk space had drifted by a small,
+// ordinary amount — logs, temp files, the cache itself growing — with zero
+// actual configuration change. CacheMaxSizeMB is derived from live free
+// disk space, unlike every other MB-sized field (which derive from total
+// RAM, essentially constant between nearby runs), so it is the one value
+// that needs explicit tolerance for exactly this kind of real-world noise.
+func TestCacheMaxSizeToleratesDiskDrift(t *testing.T) {
+	base := machine(8192, 4, func(f *facts.Facts) { f.Storage.FreeMB = 40000 })
+	// A few hundred MB of drift — a WordPress install, some log growth,
+	// package caches — comfortably within one 256 MB rounding step either
+	// side of 40000, and far larger than the KB-scale noise a real "nothing
+	// changed" re-run would ever see.
+	drifted := machine(8192, 4, func(f *facts.Facts) { f.Storage.FreeMB = 40120 })
+
+	a := Compute(base, Options{Profile: ProfileBalanced, Sites: 1})
+	b := Compute(drifted, Options{Profile: ProfileBalanced, Sites: 1})
+	if a.Nginx.CacheMaxSizeMB != b.Nginx.CacheMaxSizeMB {
+		t.Errorf("CacheMaxSizeMB = %d at 40000 MB free, %d at 40120 MB free — small disk drift should not change it",
+			a.Nginx.CacheMaxSizeMB, b.Nginx.CacheMaxSizeMB)
+	}
+}
+
 func TestExplainCoversEveryMajorDecision(t *testing.T) {
 	p := Compute(machine(8192, 4), Options{})
 	text := strings.Join(p.Explain(), "\n")

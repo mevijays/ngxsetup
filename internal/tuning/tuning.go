@@ -490,7 +490,17 @@ func computeNginx(f facts.Facts, o Options, b Budget, php PHPPlan, p *Plan) Ngin
 	// keys zone holds roughly 8000 keys per megabyte.
 	n.CacheKeysZoneMB = clamp(b.UsableMB/100, 8, 256)
 	if f.Storage.FreeMB > 0 {
-		n.CacheMaxSizeMB = clamp(f.Storage.FreeMB*15/100, 256, 20480)
+		// Rounded to the nearest 256 MB, unlike every other MB-sized field
+		// above (which derive from total RAM, essentially constant between
+		// two nearby runs): free disk space is the one input here that
+		// drifts on its own between successive `tune` invocations — logs,
+		// temp files, the FastCGI cache itself growing — even with zero
+		// real configuration change. Found live: two `tune --apply` runs a
+		// few minutes apart on an otherwise-unchanged machine rewrote this
+		// value (and reloaded nginx) purely from that drift. Rounding
+		// absorbs noise-level fluctuation while still tracking a real,
+		// sustained change in available disk.
+		n.CacheMaxSizeMB = roundTo(clamp(f.Storage.FreeMB*15/100, 256, 20480), 256)
 	} else {
 		n.CacheMaxSizeMB = 1024
 		p.Warnings = append(p.Warnings, "free disk space unknown; FastCGI cache capped at 1 GB")

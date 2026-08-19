@@ -127,6 +127,15 @@ jobs:
 
       - name: Applying twice changes nothing
         run: |
+          # A fair idempotency check compares two applies run back-to-back,
+          # not one against whatever `setup` produced minutes ago: real
+          # state has legitimately moved since then (a site now exists,
+          # which correctly changes opcache sizing; disk usage has shifted
+          # from installing WordPress). Establish the current baseline with
+          # one apply first, discard its output, then check that an
+          # immediately-following second apply reports nothing further.
+          sudo ./ngxsetup tune --apply > /tmp/baseline-apply.log 2>&1
+          cat /tmp/baseline-apply.log
           sudo ./ngxsetup tune --apply > /tmp/second-apply.log 2>&1
           cat /tmp/second-apply.log
           if grep -qE '^\s*(✓|created|updated)' /tmp/second-apply.log; then
