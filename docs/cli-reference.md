@@ -145,9 +145,10 @@ sudo ngxsetup secure --apply
 ## `web`
 
 ```bash
-sudo ngxsetup web                        # binds 127.0.0.1, random port; reach it over an SSH tunnel
+sudo ngxsetup web                        # every interface, random port; prints a URL per IP
 sudo ngxsetup web --port 8443             # pin the port
-sudo ngxsetup web --bind 0.0.0.0          # every interface (opens the port in ufw for the session)
+sudo ngxsetup web --bind eth1             # one interface's address (or an IP)
+sudo ngxsetup web --bind 127.0.0.1        # this machine only; reach it over an SSH tunnel
 ```
 
 ## `migrate`

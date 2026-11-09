@@ -12,8 +12,9 @@
 // (see auth.go): `ngxsetup web` is designed to be started in an operator's
 // own active terminal session and to die with it — never installed as a
 // systemd service, never left running unattended — and only someone who can
-// see that terminal can sign in. It binds to 127.0.0.1 by default; reach it
-// through an SSH tunnel, or pass --bind to expose it on a network you trust.
+// see that terminal can sign in. It binds to every interface by default
+// (DefaultBind) and prints a sign-in URL per address; pass --bind 127.0.0.1
+// to keep it reachable only through an SSH tunnel.
 package webui
 
 import (
@@ -85,9 +86,10 @@ func New(cfg Config) (*Server, error) {
 // Serve starts the listener and blocks until ctx is cancelled — Ctrl+C, the
 // terminal closing (SIGHUP), or the process being asked to stop, all of
 // which the caller is expected to have wired into ctx. Returns the URL it
-// ended up bound to before blocking, via the urlReady channel, so the caller
-// can print it once the OS has actually assigned the port.
-func (s *Server) Serve(ctx context.Context, urlReady chan<- string) error {
+// ended up reachable at before blocking — one per interface address for a
+// wildcard bind — via the urlReady channel, so the caller can print them once
+// the OS has actually assigned the port.
+func (s *Server) Serve(ctx context.Context, urlReady chan<- []ListenURL) error {
 	cert, err := loadOrCreateCert(s.cfg.Bind)
 	if err != nil {
 		return fmt.Errorf("preparing TLS certificate: %w", err)
@@ -111,14 +113,6 @@ func (s *Server) Serve(ctx context.Context, urlReady chan<- string) error {
 	}
 
 	port := ln.Addr().(*net.TCPAddr).Port
-	displayHost := s.cfg.Bind
-	if displayHost == "0.0.0.0" || displayHost == "" {
-		if h, err := os.Hostname(); err == nil {
-			displayHost = h
-		} else {
-			displayHost = "<this-machine>"
-		}
-	}
 
 	// Bound to every interface but the firewall's default-deny policy still
 	// blocks the port until something explicitly allows it — confirmed live:
@@ -126,13 +120,13 @@ func (s *Server) Serve(ctx context.Context, urlReady chan<- string) error {
 	// every request from off-box got no response at all, because ufw had no
 	// rule for the port this command picked. A loopback-only bind has no
 	// such problem and gets no rule.
-	if s.cfg.Bind != "127.0.0.1" && s.cfg.Bind != "localhost" {
+	if !IsLoopbackBind(s.cfg.Bind) {
 		openFirewallPort(ctx, port)
 		defer closeFirewallPort(port)
 	}
 
 	if urlReady != nil {
-		urlReady <- fmt.Sprintf("https://%s%s", net.JoinHostPort(displayHost, fmt.Sprint(port)), s.loginPath())
+		urlReady <- listenURLs(s.cfg.Bind, port, s.loginPath())
 	}
 
 	srv := &http.Server{

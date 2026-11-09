@@ -1,9 +1,10 @@
 # Web UI guide
 
 ```bash
-sudo ngxsetup web                        # binds 127.0.0.1, random port; reach it over an SSH tunnel
+sudo ngxsetup web                        # every interface, random port (opens it in ufw for the session)
 sudo ngxsetup web --port 8443             # pin the port
-sudo ngxsetup web --bind 0.0.0.0          # every interface (opens the port in ufw for the session)
+sudo ngxsetup web --bind eth1             # only the address of one interface
+sudo ngxsetup web --bind 127.0.0.1        # this machine only; reach it over an SSH tunnel
 ```
 
 Everything the CLI can do, from a browser — for a day-to-day operator
@@ -19,11 +20,15 @@ a systemd service or left running unattended. Closing the terminal (or
 Ctrl+C) stops the server, closes any firewall port it opened, and ends
 every session.
 
-Each run prints a URL containing a random sign-in token:
+Each run prints a sign-in URL with a random token, one per address the
+server can be reached at:
 
 ```
-https://127.0.0.1:41234/login?token=…
+  eth0     https://203.0.113.10:41234/login?token=…
+  eth1     https://10.0.0.5:41234/login?token=…
 ```
+
+Open whichever one your computer can reach.
 
 Opening it sets a session cookie (`Secure`, `HttpOnly`,
 `SameSite=Strict`) and drops the token from the address bar. Without
@@ -32,16 +37,19 @@ download. The token and session exist only in the running process, so
 restarting the command signs every browser out. Treat the URL like a
 root password for as long as the command runs.
 
-By default the server listens on `127.0.0.1` only. From your own
-computer, tunnel in and open the printed URL locally:
+By default the server listens on every interface (`0.0.0.0`), since a
+server usually has no browser of its own; the port is opened in `ufw`
+for the session and closed again on a clean shutdown. `--bind` takes an
+IP address or an interface name such as `eth1` to listen on just that
+address.
+
+On a shared or public network, keep it off the network instead:
+`--bind 127.0.0.1`, then tunnel in from your own computer and open the
+printed URL there:
 
 ```bash
 ssh -L 41234:127.0.0.1:41234 you@your-server
 ```
-
-`--bind 0.0.0.0` (or a specific address) exposes it directly; the port
-is then opened in `ufw` for the session and closed again on a clean
-shutdown. Prefer the tunnel on shared or public networks.
 
 Every mutating request still requires a same-origin fetch header
 (`X-Requested-With`), which a page in another tab cannot set, as a

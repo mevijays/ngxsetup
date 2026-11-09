@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"net"
 	neturl "net/url"
 	"os"
 	"os/signal"
@@ -951,7 +950,7 @@ func cmdTop(ctx context.Context, args []string) error {
 
 func cmdWeb(ctx context.Context, args []string) error {
 	fs := newFlagSet("web")
-	bind := fs.String("bind", "127.0.0.1", "address to listen on (0.0.0.0 for every interface)")
+	bind := fs.String("bind", webui.DefaultBind, "address or interface to listen on: 0.0.0.0 (every interface), an IP, an interface name like eth1, or 127.0.0.1 for SSH-tunnel-only")
 	port := fs.Int("port", 0, "port to listen on (0 picks a random free port)")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
@@ -977,32 +976,48 @@ func cmdWeb(ctx context.Context, args []string) error {
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGHUP)
 	defer stop()
 
-	srv, err := webui.New(webui.Config{Bind: *bind, Port: *port})
+	addr, err := webui.ResolveBind(*bind)
 	if err != nil {
 		return err
 	}
 
-	urlReady := make(chan string, 1)
+	srv, err := webui.New(webui.Config{Bind: addr, Port: *port})
+	if err != nil {
+		return err
+	}
+
+	urlReady := make(chan []webui.ListenURL, 1)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ctx, urlReady) }()
 
 	select {
-	case url := <-urlReady:
+	case urls := <-urlReady:
 		logx.Section("ngxsetup web")
-		logx.Info("  %s", url)
+		for _, u := range urls {
+			if u.Iface != "" {
+				logx.Info("  %-8s %s", u.Iface, u.URL)
+			} else {
+				logx.Info("  %s", u.URL)
+			}
+		}
 		logx.Info("")
-		logx.Info("  This URL contains this run's sign-in token: anyone who has it has full")
+		logx.Info("  Each URL contains this run's sign-in token: anyone who has it has full")
 		logx.Info("  control of this server until the command stops. Do not share it.")
-		if isLoopbackBind(*bind) {
-			if u, perr := neturl.Parse(url); perr == nil {
+		if webui.IsLoopbackBind(addr) {
+			if u, perr := neturl.Parse(urls[0].URL); perr == nil {
 				logx.Info("")
 				logx.Info("  Listening on this machine only. From your own computer, tunnel in with")
 				logx.Info("    ssh -L %s:127.0.0.1:%s <you>@<this-server>", u.Port(), u.Port())
 				logx.Info("  and open the URL above there.")
 			}
 		} else {
-			logx.Warn("listening on %s — reachable by anything that can route to this machine.", *bind)
-			logx.Warn("Prefer the default (127.0.0.1) behind an SSH tunnel on shared or public networks.")
+			logx.Info("")
+			if webui.IsWildcardBind(addr) {
+				logx.Info("  Listening on every interface: open whichever URL your computer can reach.")
+			} else {
+				logx.Info("  Listening on %s.", addr)
+			}
+			logx.Info("  On a public network, use --bind 127.0.0.1 and an SSH tunnel instead.")
 		}
 		logx.Info("")
 		logx.Info("  The certificate is self-signed, so browsers will warn on first visit.")
@@ -1012,14 +1027,6 @@ func cmdWeb(ctx context.Context, args []string) error {
 	}
 
 	return <-errCh
-}
-
-func isLoopbackBind(bind string) bool {
-	if bind == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(bind)
-	return ip != nil && ip.IsLoopback()
 }
 
 // ---- cache -----------------------------------------------------------------
