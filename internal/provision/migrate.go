@@ -165,34 +165,13 @@ func (c *Ctx) MigrateProvisionDatabase(rec *state.Site, localDumpPath string) (s
 // applied to files that arrived by rsync instead of a fresh download.
 func (c *Ctx) MigrateFinishSite(rec *state.Site, dbInfo migrate.WPConfigInfo, dbPassword string, req MigrateSiteRequest) error {
 	if !c.Writer.DryRun {
-		salts, err := generateSalts()
-		if err != nil {
-			return err
-		}
 		scheme := "http"
 		if req.TLS || req.SelfSigned {
 			scheme = "https"
 		}
-		cfg, err := tmpl.Render("wordpress/wp-config.php.tmpl", tmpl.WPConfig{
-			Domain:           rec.Domain,
-			DBName:           rec.DBName,
-			DBUser:           rec.DBUser,
-			DBPassword:       dbPassword,
-			TablePrefix:      dbInfo.TablePrefix,
-			Salts:            salts,
-			SiteURL:          scheme + "://" + rec.Domain,
-			MemoryLimit:      tuning.MemString(c.Plan.PHP.MemoryLimitMB),
-			AdminMemoryLimit: tuning.MemString(c.Plan.PHP.CLIMemoryLimitMB),
-			DisableCron:      true,
-			AllowFileMods:    false,
-			ExtraDefines:     dbInfo.ExtraDefines,
-		})
+		wpConfigPath, err := c.writeMigratedWPConfig(rec, dbInfo, dbPassword, scheme)
 		if err != nil {
 			return err
-		}
-		wpConfigPath := filepath.Join(c.Path(rec.Root), "wp-config.php")
-		if err := os.WriteFile(wpConfigPath, cfg, 0o640); err != nil {
-			return fmt.Errorf("writing wp-config.php: %w", err)
 		}
 		if err := c.chownRecursive(rec.Root, rec.User+":www-data"); err != nil {
 			return err
@@ -273,6 +252,38 @@ var migratePathFixExtensions = map[string]bool{".php": true}
 // megabytes of unrelated plugin code just to scan it for one literal
 // string would cost real time on a large site for no benefit.
 const maxPathFixFileSize = 2 << 20 // 2 MB
+
+// writeMigratedWPConfig renders a migrated site's fresh wp-config.php —
+// new database credentials and salts, the source's table prefix and its own
+// custom defines — and returns the path it wrote.
+func (c *Ctx) writeMigratedWPConfig(rec *state.Site, dbInfo migrate.WPConfigInfo, dbPassword, scheme string) (string, error) {
+	salts, err := generateSalts()
+	if err != nil {
+		return "", err
+	}
+	cfg, err := tmpl.Render("wordpress/wp-config.php.tmpl", tmpl.WPConfig{
+		Domain:           rec.Domain,
+		DBName:           rec.DBName,
+		DBUser:           rec.DBUser,
+		DBPassword:       dbPassword,
+		TablePrefix:      dbInfo.TablePrefix,
+		Salts:            salts,
+		SiteURL:          scheme + "://" + rec.Domain,
+		MemoryLimit:      tuning.MemString(c.Plan.PHP.MemoryLimitMB),
+		AdminMemoryLimit: tuning.MemString(c.Plan.PHP.CLIMemoryLimitMB),
+		DisableCron:      true,
+		AllowFileMods:    false,
+		ExtraDefines:     dbInfo.ExtraDefines,
+	})
+	if err != nil {
+		return "", err
+	}
+	wpConfigPath := filepath.Join(c.Path(rec.Root), "wp-config.php")
+	if err := os.WriteFile(wpConfigPath, cfg, 0o640); err != nil {
+		return "", fmt.Errorf("writing wp-config.php: %w", err)
+	}
+	return wpConfigPath, nil
+}
 
 // MigrateFixHardcodedPaths is the sanity pass that runs after everything
 // else has succeeded: it walks a freshly migrated site's document root and

@@ -133,7 +133,10 @@ func TestMigratedWPConfigKeepsTheSourcesCustomDefines(t *testing.T) {
 	info := migrate.WPConfigInfo{TablePrefix: "wp_", ExtraDefines: []string{
 		"define( 'WP_CACHE', true );", "define( 'MULTISITE', true );",
 	}}
-	if err := c.MigrateFinishSite(rec, info, "a-long-generated-password", MigrateSiteRequest{Domain: rec.Domain}); err != nil {
+	// The config writer alone: the rest of MigrateFinishSite runs the real
+	// `nginx -t`, which fails on any machine that has nginx installed but
+	// is not root (a CI runner, for one).
+	if _, err := c.writeMigratedWPConfig(rec, info, "a-long-generated-password", "http"); err != nil {
 		t.Fatal(err)
 	}
 	cfg := read(t, c, filepath.Join(rec.Root, "wp-config.php"))
