@@ -16,7 +16,10 @@ Type=oneshot
 User={{ .User }}
 Group={{ .User }}
 WorkingDirectory={{ .Root }}
-ExecStart=/usr/local/bin/wp cron event run --due-now --path={{ .Root }}
+{{ if .ExecCondition }}# Until WordPress's installer has run there is nothing to schedule; this
+# skips the run cleanly instead of failing it every few minutes.
+ExecCondition={{ .ExecCondition }}
+{{ end }}ExecStart={{ .ExecStart }}
 
 # A stuck cron job must not accumulate: without a timeout, overlapping runs
 # pile up until the machine runs out of PHP workers.

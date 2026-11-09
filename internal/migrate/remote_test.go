@@ -39,3 +39,29 @@ func TestIsSSHConnectionFailureClassifiesByExitCode(t *testing.T) {
 		t.Error("a non-ExitError failure must default to retryable, preserving the previous always-retry behaviour for unknown failure modes")
 	}
 }
+
+func TestMyCnfQuotesValues(t *testing.T) {
+	got := myCnf(WPConfigInfo{DBUser: "wp", DBPassword: `p#a"s\s`, DBHost: "localhost"})
+	want := "[client]\nuser=\"wp\"\npassword=\"p#a\\\"s\\\\s\"\nhost=\"localhost\"\n"
+	if got != want {
+		t.Errorf("myCnf =\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestSplitDBHost(t *testing.T) {
+	cases := []struct{ in, host, port, socket string }{
+		{"", "localhost", "", ""},
+		{"localhost", "localhost", "", ""},
+		{"127.0.0.1:3307", "127.0.0.1", "3307", ""},
+		{"localhost:/var/run/mysqld/mysqld.sock", "localhost", "", "/var/run/mysqld/mysqld.sock"},
+		{"[::1]:3306", "::1", "3306", ""},
+		{"::1", "::1", "", ""},
+		{"db.internal", "db.internal", "", ""},
+	}
+	for _, c := range cases {
+		h, p, s := splitDBHost(c.in)
+		if h != c.host || p != c.port || s != c.socket {
+			t.Errorf("splitDBHost(%q) = %q, %q, %q; want %q, %q, %q", c.in, h, p, s, c.host, c.port, c.socket)
+		}
+	}
+}

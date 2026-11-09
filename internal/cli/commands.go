@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net"
+	neturl "net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -949,7 +951,7 @@ func cmdTop(ctx context.Context, args []string) error {
 
 func cmdWeb(ctx context.Context, args []string) error {
 	fs := newFlagSet("web")
-	bind := fs.String("bind", "0.0.0.0", "address to listen on")
+	bind := fs.String("bind", "127.0.0.1", "address to listen on (0.0.0.0 for every interface)")
 	port := fs.Int("port", 0, "port to listen on (0 picks a random free port)")
 	if _, err := parseArgs(fs, args); err != nil {
 		return err
@@ -961,7 +963,8 @@ func cmdWeb(ctx context.Context, args []string) error {
 
 	// This command is meant to live exactly as long as the terminal session
 	// that started it, never longer — see the package doc in
-	// internal/webui/server.go for why there is no login to begin with.
+	// internal/webui/server.go and internal/webui/auth.go for how access is
+	// tied to that terminal.
 	// cli.Run's own signal handling covers Ctrl+C (SIGINT) and SIGTERM
 	// already; SIGHUP — what the process actually receives when its
 	// controlling terminal closes — is added here rather than globally,
@@ -988,9 +991,19 @@ func cmdWeb(ctx context.Context, args []string) error {
 		logx.Section("ngxsetup web")
 		logx.Info("  %s", url)
 		logx.Info("")
-		logx.Warn("no login is required — anyone who can reach this address has full")
-		logx.Warn("control of this server. Prefer --bind 127.0.0.1 behind an SSH tunnel,")
-		logx.Warn("or a network only you can reach, over leaving this open to the internet.")
+		logx.Info("  This URL contains this run's sign-in token: anyone who has it has full")
+		logx.Info("  control of this server until the command stops. Do not share it.")
+		if isLoopbackBind(*bind) {
+			if u, perr := neturl.Parse(url); perr == nil {
+				logx.Info("")
+				logx.Info("  Listening on this machine only. From your own computer, tunnel in with")
+				logx.Info("    ssh -L %s:127.0.0.1:%s <you>@<this-server>", u.Port(), u.Port())
+				logx.Info("  and open the URL above there.")
+			}
+		} else {
+			logx.Warn("listening on %s — reachable by anything that can route to this machine.", *bind)
+			logx.Warn("Prefer the default (127.0.0.1) behind an SSH tunnel on shared or public networks.")
+		}
 		logx.Info("")
 		logx.Info("  The certificate is self-signed, so browsers will warn on first visit.")
 		logx.Info("  This stops when the terminal does. Press Ctrl+C to stop it now.")
@@ -999,6 +1012,14 @@ func cmdWeb(ctx context.Context, args []string) error {
 	}
 
 	return <-errCh
+}
+
+func isLoopbackBind(bind string) bool {
+	if bind == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(bind)
+	return ip != nil && ip.IsLoopback()
 }
 
 // ---- cache -----------------------------------------------------------------

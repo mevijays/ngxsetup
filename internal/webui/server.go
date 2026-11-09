@@ -8,16 +8,12 @@
 // calls (AddSite, RemoveSite, ApplySecurity...) — the web UI is a second
 // front end on the existing engine, not a second engine.
 //
-// There is no login. This is deliberate, not an oversight: `ngxsetup web` is
-// designed to be started in an operator's own active terminal session and to
-// die with it — never installed as a systemd service, never left running
-// unattended. The access control is "did you have a shell to start this
-// command in the first place," which a password prompt in front of the same
-// command would not meaningfully add to. What the missing login does change
-// is the operator's responsibility for *where* this gets bound: see the
-// warning `ngxsetup web` prints on start, and prefer --bind 127.0.0.1 behind
-// an SSH tunnel, or a network only the operator's machine can reach, over
-// leaving --bind 0.0.0.0 open on a shared or public network.
+// Access is by a per-run sign-in token printed in the operator's terminal
+// (see auth.go): `ngxsetup web` is designed to be started in an operator's
+// own active terminal session and to die with it — never installed as a
+// systemd service, never left running unattended — and only someone who can
+// see that terminal can sign in. It binds to 127.0.0.1 by default; reach it
+// through an SSH tunnel, or pass --bind to expose it on a network you trust.
 package webui
 
 import (
@@ -50,6 +46,11 @@ type Server struct {
 	sampler  *stats.Sampler
 	auditLog *os.File
 	migrate  *MigrateManager
+
+	// loginToken goes into the printed URL; session is the cookie value a
+	// browser receives in exchange for it. Both are random per run.
+	loginToken string
+	session    string
 }
 
 // New builds a Server. It does not touch the network yet — call Serve for
@@ -70,7 +71,15 @@ func New(cfg Config) (*Server, error) {
 		sampler = stats.NewSampler(nil)
 	}
 
-	return &Server{cfg: cfg, sampler: sampler, migrate: &MigrateManager{}}, nil
+	token, err := randomSecret(32)
+	if err != nil {
+		return nil, err
+	}
+	session, err := randomSecret(32)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{cfg: cfg, sampler: sampler, migrate: &MigrateManager{}, loginToken: token, session: session}, nil
 }
 
 // Serve starts the listener and blocks until ctx is cancelled — Ctrl+C, the
@@ -123,7 +132,7 @@ func (s *Server) Serve(ctx context.Context, urlReady chan<- string) error {
 	}
 
 	if urlReady != nil {
-		urlReady <- fmt.Sprintf("https://%s:%d/", displayHost, port)
+		urlReady <- fmt.Sprintf("https://%s%s", net.JoinHostPort(displayHost, fmt.Sprint(port)), s.loginPath())
 	}
 
 	srv := &http.Server{
@@ -269,21 +278,19 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/migrate/status", s.handleMigrateStatus)
 	mux.HandleFunc("POST /api/migrate/cancel", mut(s.handleMigrateCancel))
 
-	return s.logRequests(mux)
+	return s.logRequests(s.requireAuth(mux))
 }
 
 // ---- middleware --------------------------------------------------------------
 
-// requireFetchHeader is a lightweight CSRF-style guard, kept even with no
-// login: without it, any other page open in the operator's browser at the
-// same time could silently fire a background request at this server — a
-// hidden auto-submitting form or a stray fetch() needs no credential to
-// exploit here, since there is none. A cross-site request cannot set a
-// custom header without triggering a CORS preflight, and this server sends
-// no Access-Control-Allow-Origin for any preflight to succeed against, so
-// requiring this header is enough to prove the request came from this app's
-// own JavaScript rather than an unrelated page the operator merely happens
-// to have open.
+// requireFetchHeader is a CSRF-style guard on top of the SameSite=Strict
+// session cookie: a second, independent reason another page open in the
+// operator's browser cannot fire a background request (a hidden
+// auto-submitting form, a stray fetch()) at this server. A cross-site
+// request cannot set a custom header without triggering a CORS preflight,
+// and this server sends no Access-Control-Allow-Origin for any preflight to
+// succeed against, so requiring this header proves the request came from
+// this app's own JavaScript.
 func (s *Server) requireFetchHeader(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Requested-With") != "ngxsetup-web" {

@@ -194,6 +194,26 @@ func (c *Ctx) Transaction(name string, apply func() error, validate func() error
 	return nil
 }
 
+// detached runs fn with c.Context replaced by a fresh context that ignores the
+// original's cancellation (but keeps its values), restoring it afterwards.
+// Cleanup after a failure uses this: when the failure was a cancellation —
+// an operator pressing Cancel, a closed browser tab — the original context
+// is already done, and every cleanup command run against it would fail
+// immediately, leaving behind exactly what the cleanup exists to remove.
+func (c *Ctx) detached(fn func()) {
+	orig := c.Context
+	if orig == nil {
+		orig = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(orig), 10*time.Minute)
+	c.Context = ctx
+	defer func() {
+		cancel()
+		c.Context = orig
+	}()
+	fn()
+}
+
 // Path applies the context root, so every filesystem reference in this package
 // can be written as an absolute system path.
 func (c *Ctx) Path(p string) string { return withRoot(c.Writer.Root, p) }

@@ -92,4 +92,6 @@ sudo ngxsetup config set borg.keep_monthly 6
 ```
 
 `0` means "keep everything of that granularity." Applied with
-`borg backup --prune` or automatically on every scheduled run.
+`borg backup --prune` or automatically on every scheduled run. A prune (or a single archive
+deletion) is followed by `borg compact`, which is what actually frees
+the space on borg 1.2 and later.

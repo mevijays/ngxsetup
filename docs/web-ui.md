@@ -1,9 +1,9 @@
 # Web UI guide
 
 ```bash
-sudo ngxsetup web                        # binds 0.0.0.0, random port
-sudo ngxsetup web --port 8443             # pin the port (open it ahead of time)
-sudo ngxsetup web --bind 127.0.0.1        # local/VPN-only, e.g. behind an SSH tunnel
+sudo ngxsetup web                        # binds 127.0.0.1, random port; reach it over an SSH tunnel
+sudo ngxsetup web --port 8443             # pin the port
+sudo ngxsetup web --bind 0.0.0.0          # every interface (opens the port in ufw for the session)
 ```
 
 Everything the CLI can do, from a browser — for a day-to-day operator
@@ -11,20 +11,37 @@ who should be able to create a site, watch resource usage, tail a log,
 run a security scan or restore a backup without a Linux shell account
 or SSH key of their own.
 
-## There is no login, on purpose
+## Signing in
 
 `ngxsetup web` is meant to be started in an operator's own active
 terminal session and to die with it — it must **never** be installed as
-a systemd service or left running unattended. The access control is
-"did you have a shell to start this command in the first place";
-closing the terminal (or Ctrl+C) stops the server, closes the firewall
-port it opened, and ends the session.
+a systemd service or left running unattended. Closing the terminal (or
+Ctrl+C) stops the server, closes any firewall port it opened, and ends
+every session.
 
-Because there is no login, **where you bind it matters**: prefer
-`--bind 127.0.0.1` behind an SSH tunnel, or a network only you can
-reach, over leaving `--bind 0.0.0.0` (the default, chosen for the "not
-a Linux user, needs to reach it directly" case) open on a shared or
-public network — the tool prints this warning every time it starts.
+Each run prints a URL containing a random sign-in token:
+
+```
+https://127.0.0.1:41234/login?token=…
+```
+
+Opening it sets a session cookie (`Secure`, `HttpOnly`,
+`SameSite=Strict`) and drops the token from the address bar. Without
+that cookie nothing is served — not the page, not the API, not a backup
+download. The token and session exist only in the running process, so
+restarting the command signs every browser out. Treat the URL like a
+root password for as long as the command runs.
+
+By default the server listens on `127.0.0.1` only. From your own
+computer, tunnel in and open the printed URL locally:
+
+```bash
+ssh -L 41234:127.0.0.1:41234 you@your-server
+```
+
+`--bind 0.0.0.0` (or a specific address) exposes it directly; the port
+is then opened in `ufw` for the session and closed again on a clean
+shutdown. Prefer the tunnel on shared or public networks.
 
 Every mutating request still requires a same-origin fetch header
 (`X-Requested-With`), which a page in another tab cannot set, as a
@@ -36,10 +53,7 @@ exact domain name or the word `UNINSTALL`.
 
 The certificate is self-signed (there is no domain name to request a
 real one for), so a browser will warn on first visit — expected, not a
-sign of a misconfigured server. The firewall port it ends up bound to
-is opened automatically for the session (via `ufw`, if present) and
-closed again on a clean shutdown, rather than requiring a manual
-`ufw allow` first.
+sign of a misconfigured server.
 
 ## What's in it
 

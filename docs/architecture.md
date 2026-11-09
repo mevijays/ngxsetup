@@ -111,6 +111,12 @@ site's account can traverse into the tree at all. The packaged `www`
 pool is removed during setup, because leaving it would give any site a
 way to run as `www-data` and undo all of this.
 
+Every WordPress site also gets its own scheduler: `wp-config.php` sets
+`DISABLE_WP_CRON`, and a per-site systemd timer
+(`ngxsetup-wpcron-<slug>.timer`, every 5 minutes) runs due events as the
+site's own user instead, so scheduled posts and plugin jobs run on time
+on a quiet site and no visitor pays for them.
+
 ### The jail
 
 Permissions alone are not the whole story. `open_basedir` is a
@@ -199,15 +205,15 @@ command runs at a time in one process — true for the CLI by
 construction but not for an HTTP server that can receive two requests
 at once.
 
-**There is no login**, deliberately. This command is designed to be
-started in an operator's own active terminal and to die with it — never
-a systemd service, never left running unattended — so the access
-control is "did you have a shell to start this command in the first
-place." The one guard that survives dropping auth is a lightweight
-CSRF-style check: every mutating request must carry an
+**Access is tied to the terminal that started it.** This command is
+designed to be started in an operator's own active terminal and to die
+with it — never a systemd service, never left running unattended. Each
+run generates a random sign-in token, printed only in that terminal,
+which the browser trades for a `SameSite=Strict`, `Secure`, `HttpOnly`
+session cookie; nothing is served without it. It binds to `127.0.0.1`
+by default. On top of the cookie, every mutating request must carry an
 `X-Requested-With` header only same-origin JavaScript can set. See
-[Web UI guide](web-ui.md) for how to run it and why *where* you bind it
-matters.
+[Web UI guide](web-ui.md) for how to reach it over an SSH tunnel.
 
 The frontend is embedded via `go:embed` and framework-free on the JS
 side — vanilla `fetch()` and a small hash-free view router. Styling

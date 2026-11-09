@@ -2077,7 +2077,7 @@ views.dbmanage = async (container) => {
                 // re-render needed for that part.
                 return `<td>
                   <span class="cell-display text-sm text-slate-700">${escapeHTML(shown)}</span>
-                  <input type="text" class="field-input cell-input hidden" data-col="${escapeHTML(c.name)}" value="${escapeHTML(shown)}">
+                  <textarea class="field-input cell-input hidden" rows="1" data-col="${escapeHTML(c.name)}"></textarea>
                 </td>`;
               }).join('')}
               ${result.editable ? `<td class="text-right whitespace-nowrap">
@@ -2101,7 +2101,23 @@ views.dbmanage = async (container) => {
     if (!result.editable) return;
     const pkCols = columns.filter((c) => c.primary_key).map((c) => c.name);
 
+    // Cells are edited in a <textarea>, never <input type=text>: a text input
+    // silently strips line breaks from its value, which would flatten any
+    // multi-line value (post content, serialized options) the moment the
+    // row was opened. Values are set through .value, not markup, because the
+    // HTML parser also drops a textarea's leading newline. And only cells the
+    // operator actually typed into are sent (data-dirty) — comparing values
+    // instead would flag a cell whose \r\n line endings the textarea
+    // normalised to \n as "changed" and quietly rewrite it.
     function enterEditMode(tr) {
+      const original = rows[Number(tr.dataset.rowIndex)];
+      tr.querySelectorAll('.cell-input').forEach((el) => {
+        const v = original[el.dataset.col];
+        el.value = v === null || v === undefined ? '' : String(v);
+        delete el.dataset.dirty;
+        el.rows = Math.min(8, Math.max(1, el.value.split('\n').length));
+        el.oninput = () => { el.dataset.dirty = '1'; };
+      });
       tr.querySelectorAll('.cell-display').forEach((el) => el.classList.add('hidden'));
       tr.querySelectorAll('.cell-input').forEach((el) => el.classList.remove('hidden'));
       tr.querySelector('.row-edit-btn').classList.add('hidden');
@@ -2128,10 +2144,7 @@ views.dbmanage = async (container) => {
         pkCols.forEach((pk) => { primaryKey[pk] = String(original[pk]); });
         const changes = {};
         tr.querySelectorAll('.cell-input').forEach((input) => {
-          const col = input.dataset.col;
-          const newVal = input.value;
-          const oldVal = original[col] === null || original[col] === undefined ? '' : String(original[col]);
-          if (newVal !== oldVal) changes[col] = newVal;
+          if (input.dataset.dirty === '1') changes[input.dataset.col] = input.value;
         });
         if (Object.keys(changes).length === 0) {
           toast('Nothing changed on that row', 'ok');

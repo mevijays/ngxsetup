@@ -17,9 +17,11 @@ package db
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"ngxsetup/internal/facts"
 	"ngxsetup/internal/logx"
@@ -84,9 +86,14 @@ func (c Client) Exec(ctx context.Context, sql string) error {
 }
 
 // Query runs a statement and returns raw tab-separated output.
+//
+// Only line breaks are trimmed from the ends, never tabs or spaces: the last
+// row's last field is legitimately empty for many queries (COLUMN_KEY on an
+// unindexed column, for one), and trimming all whitespace would delete the
+// tab in front of it and turn a four-field row into a three-field one.
 func (c Client) Query(ctx context.Context, sql string) (string, error) {
 	out, err := c.Runner.RunStdin(ctx, sql, c.binary(), c.baseArgs()...)
-	return strings.TrimSpace(out), err
+	return strings.Trim(out, "\r\n"), err
 }
 
 // Ping reports whether the server is reachable and accepting our credentials.
@@ -250,11 +257,64 @@ func (c Client) Dump(ctx context.Context, dbName, path string) error {
 		"--no-tablespaces", // avoids needing PROCESS privilege
 		dbName,
 	)
-	out, err := c.Runner.Output(ctx, bin, args...)
-	if err != nil {
+	// Streamed straight to disk: buffering the whole dump in this process
+	// first would need as much free memory as the database is large.
+	if err := c.longRunner().RunToFile(ctx, path, 0o600, bin, args...); err != nil {
 		return fmt.Errorf("dumping %s: %w", dbName, err)
 	}
-	return os.WriteFile(path, []byte(out), 0o600)
+	if c.Runner.DryRun {
+		return nil
+	}
+	if err := CheckDumpComplete(path); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("dumping %s: %w", dbName, err)
+	}
+	return nil
+}
+
+// longOperationTimeout bounds a dump or restore. These scale with the size
+// of the database rather than being roughly constant like a package install,
+// so the runner's default would kill a large one partway through.
+const longOperationTimeout = 12 * time.Hour
+
+func (c Client) longRunner() system.Runner {
+	r := c.Runner
+	if r.Timeout < longOperationTimeout {
+		r.Timeout = longOperationTimeout
+	}
+	return r
+}
+
+// dumpTrailer is the comment mysqldump and mariadb-dump write as the very
+// last line of a dump that ran to completion.
+const dumpTrailer = "-- Dump completed"
+
+// CheckDumpComplete confirms a dump file ends with the completion trailer.
+// A dump cut short — the server went away, the disk filled — is otherwise a
+// perfectly plausible-looking SQL file that restores only some tables.
+func CheckDumpComplete(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	const window = 4096
+	off := info.Size() - window
+	if off < 0 {
+		off = 0
+	}
+	buf := make([]byte, info.Size()-off)
+	if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+		return err
+	}
+	if !strings.Contains(string(buf), dumpTrailer) {
+		return fmt.Errorf("%s is incomplete: it does not end with the %q trailer a finished dump has", path, dumpTrailer)
+	}
+	return nil
 }
 
 // Restore loads a logical dump into an existing database, streaming the file
@@ -280,7 +340,7 @@ func (c Client) Restore(ctx context.Context, dbName, path string) error {
 
 	args := c.baseArgs()
 	args = append(args, dbName)
-	if _, err := c.Runner.RunStdinFile(ctx, path, c.binary(), args...); err != nil {
+	if _, err := c.longRunner().RunStdinFile(ctx, path, c.binary(), args...); err != nil {
 		return fmt.Errorf("restoring %s from %s: %w", dbName, path, err)
 	}
 	logx.Change("restored %s from %s", dbName, path)

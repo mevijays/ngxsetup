@@ -125,3 +125,17 @@ func TestEnsureSchemaAndGrantValidatesIdentifiers(t *testing.T) {
 		t.Error("EnsureSchemaAndGrant accepted an unsafe user name")
 	}
 }
+
+func TestCheckDumpComplete(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.sql")
+	bad := filepath.Join(dir, "bad.sql")
+	_ = os.WriteFile(good, []byte("CREATE TABLE t (id int);\n-- Dump completed on 2026-11-09 10:00:00\n"), 0o600)
+	_ = os.WriteFile(bad, []byte("CREATE TABLE t (id int);\nINSERT INTO t VALUES (1"), 0o600)
+	if err := CheckDumpComplete(good); err != nil {
+		t.Errorf("a complete dump was rejected: %v", err)
+	}
+	if err := CheckDumpComplete(bad); err == nil {
+		t.Error("a truncated dump was accepted")
+	}
+}

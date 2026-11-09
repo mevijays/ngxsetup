@@ -48,3 +48,34 @@ func TestRunStdinFileDryRunDoesNotOpenFile(t *testing.T) {
 		t.Errorf("dry-run RunStdinFile returned output %q, want empty", out)
 	}
 }
+
+// RunToFile is how a database dump reaches disk: streamed, and renamed into
+// place only on success.
+func TestRunToFileStreamsOutputAndRenamesOnSuccess(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "dump.sql")
+	if err := (Runner{}).RunToFile(context.Background(), dest, 0o600, "sh", "-c", "printf 'a\\nb\\n'"); err != nil {
+		t.Fatalf("RunToFile: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil || string(got) != "a\nb\n" {
+		t.Fatalf("dest = %q, %v; want the command's output", got, err)
+	}
+	if info, _ := os.Stat(dest); info.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+// A failed command must leave neither the real file nor its partial temp
+// file behind — a truncated dump under the real name is worse than none.
+func TestRunToFileLeavesNothingOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "dump.sql")
+	err := (Runner{}).RunToFile(context.Background(), dest, 0o600, "sh", "-c", "echo partial; echo boom >&2; exit 3")
+	if err == nil {
+		t.Fatal("RunToFile reported success for a failing command")
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("files left behind after a failure: %v", entries)
+	}
+}

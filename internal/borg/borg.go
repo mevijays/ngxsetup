@@ -391,6 +391,7 @@ func (c Client) DeleteArchive(ctx context.Context, name string) error {
 		return fmt.Errorf("deleting archive %s: %w\n%s", name, err, out)
 	}
 	logx.Change("deleted borg archive %s", name)
+	c.compactOrWarn(ctx)
 	return nil
 }
 
@@ -426,7 +427,32 @@ func (c Client) Prune(ctx context.Context, ret Retention) error {
 		return fmt.Errorf("pruning %s: %w\n%s", c.Repo, err, out)
 	}
 	logx.Change("pruned old archives in %s", c.Repo)
+	c.compactOrWarn(ctx)
 	return nil
+}
+
+// Compact frees the repository space that pruned or deleted archives held.
+// Since borg 1.2, prune and delete only mark segments as unused; until
+// compact runs the repository never shrinks, so a retention policy alone
+// would let it grow forever. Borg 1.1 has no compact subcommand (it frees
+// space during prune itself), which is not an error.
+func (c Client) Compact(ctx context.Context) error {
+	out, err := c.runner().CombinedOutput(ctx, "borg", "compact", c.Repo)
+	if err != nil {
+		if strings.Contains(out, "invalid choice") {
+			return nil // borg < 1.2
+		}
+		return fmt.Errorf("compacting %s: %w\n%s", c.Repo, err, out)
+	}
+	logx.Change("compacted %s, freeing the space removed archives held", c.Repo)
+	return nil
+}
+
+func (c Client) compactOrWarn(ctx context.Context) {
+	if err := c.Compact(ctx); err != nil {
+		logx.Warn("%v", err)
+		logx.Warn("the removed archives' space is not freed until `borg compact` succeeds")
+	}
 }
 
 // passCommand builds the BORG_PASSCOMMAND value for reading path's

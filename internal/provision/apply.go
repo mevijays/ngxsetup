@@ -100,6 +100,13 @@ func (c *Ctx) ApplyNginx() error {
 			return fmt.Errorf("re-applying configuration for %s: %w", site.Domain, err)
 		}
 	}
+	// Installs whose certificates were issued before the renewal hook
+	// existed get it here.
+	if c.hasLetsEncryptSite() {
+		if err := c.EnsureCertbotReloadHook(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -326,6 +333,12 @@ func (c *Ctx) ApplySystem() error {
 		return err
 	}
 
+	// Each WordPress site's scheduler timer. Sites created before these units
+	// were installed at all pick them up here.
+	if err := c.applyWPCronUnits(); err != nil {
+		return err
+	}
+
 	if c.Writer.DryRun {
 		return nil
 	}
@@ -350,7 +363,11 @@ func (c *Ctx) ApplySystem() error {
 	} else {
 		logx.Skip("kernel tuning already up to date")
 	}
-	return system.DaemonReload(c.Context, c.Runner)
+	if err := system.DaemonReload(c.Context, c.Runner); err != nil {
+		return err
+	}
+	c.enableWPCronTimers()
+	return nil
 }
 
 // applyCloudflareRealIP rewrites the client address from Cloudflare's header,

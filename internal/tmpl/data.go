@@ -178,6 +178,24 @@ type Salt struct {
 	Value string
 }
 
+// WPCron is the context for one WordPress site's scheduler service and
+// timer, which replace the visitor-triggered wp-cron DISABLE_WP_CRON turns
+// off.
+type WPCron struct {
+	Domain   string
+	User     string
+	Root     string
+	SiteBase string
+	DBUnit   string
+	Interval string
+	// ExecStart is the full command line: wp-cli when installed, PHP
+	// running wp-cron.php directly otherwise.
+	ExecStart string
+	// ExecCondition, when set, skips a run (without marking the unit
+	// failed) while WordPress is not yet installed.
+	ExecCondition string
+}
+
 // WPConfig is the context for a generated wp-config.php.
 type WPConfig struct {
 	Domain      string
@@ -195,6 +213,10 @@ type WPConfig struct {
 	// Off by default: it is the difference between an upload bug and a
 	// persistent backdoor.
 	AllowFileMods bool
+	// ExtraDefines are complete define(...) statements carried over from a
+	// migrated site's previous wp-config.php (multisite, caching, plugin
+	// settings). Empty for a new site.
+	ExtraDefines []string
 }
 
 // PhpMyAdmin is the context for the dedicated phpMyAdmin server block.

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -79,6 +80,9 @@ type State struct {
 	Sites          []Site `json:"sites"`
 
 	path string
+	// base is what this State looked like when it was loaded (or last
+	// saved). Save merges against it — see Save.
+	base *State
 }
 
 // ErrNotFound is returned when a named site is not in the registry.
@@ -108,28 +112,148 @@ func Load(path string) (*State, error) {
 			path, s.SchemaVersion, SchemaVersion)
 	}
 	s.path = path
+	s.base = s.snapshot()
 	return s, nil
 }
 
 // Save writes the registry atomically with restrictive permissions.
+//
+// More than one process can hold a State at once — a CLI command run while
+// `ngxsetup web` is up, or a migration job that runs for an hour while the
+// web UI keeps adding and removing sites — and a plain "write what I have"
+// would let whichever saved last silently erase every change the others
+// made in the meantime. So Save is a three-way merge, under an exclusive
+// lock: it re-reads the file, and for every site (and every top-level
+// field) this State changed since it was loaded, its version wins;
+// everything else keeps whatever is on disk now.
 func (s *State) Save() error {
-	s.SchemaVersion = SchemaVersion
-	sort.Slice(s.Sites, func(i, j int) bool { return s.Sites[i].Slug < s.Sites[j].Slug })
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return err
+	}
+	unlock, err := lockFile(s.path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
-	data, err := json.MarshalIndent(s, "", "  ")
+	disk, err := Load(s.path)
+	if err != nil {
+		return err
+	}
+	merged := s.mergeOnto(disk)
+	merged.SchemaVersion = SchemaVersion
+	sort.Slice(merged.Sites, func(i, j int) bool { return merged.Sites[i].Slug < merged.Sites[j].Slug })
+
+	data, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
 
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
-	}
 	tmp := s.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+
+	// This State now reflects the file, including other writers' changes.
+	s.SchemaVersion = merged.SchemaVersion
+	s.Profile, s.PHPVersion, s.DBFlavor = merged.Profile, merged.PHPVersion, merged.DBFlavor
+	s.SetupCompleted, s.LastAppliedAt = merged.SetupCompleted, merged.LastAppliedAt
+	s.Sites = merged.Sites
+	s.base = s.snapshot()
+	return nil
+}
+
+// snapshot deep-copies the persisted fields.
+func (s *State) snapshot() *State {
+	c := &State{
+		SchemaVersion:  s.SchemaVersion,
+		Profile:        s.Profile,
+		PHPVersion:     s.PHPVersion,
+		DBFlavor:       s.DBFlavor,
+		SetupCompleted: s.SetupCompleted,
+		LastAppliedAt:  s.LastAppliedAt,
+		Sites:          make([]Site, len(s.Sites)),
+	}
+	for i, site := range s.Sites {
+		site.Aliases = append([]string(nil), site.Aliases...)
+		c.Sites[i] = site
+	}
+	return c
+}
+
+// mergeOnto returns disk with this State's own changes (relative to base)
+// applied on top.
+func (s *State) mergeOnto(disk *State) *State {
+	base := s.base
+	if base == nil {
+		base = &State{}
+	}
+	out := disk.snapshot()
+	out.path = s.path
+
+	if s.Profile != base.Profile {
+		out.Profile = s.Profile
+	}
+	if s.PHPVersion != base.PHPVersion {
+		out.PHPVersion = s.PHPVersion
+	}
+	if s.DBFlavor != base.DBFlavor {
+		out.DBFlavor = s.DBFlavor
+	}
+	if s.SetupCompleted != base.SetupCompleted {
+		out.SetupCompleted = s.SetupCompleted
+	}
+	if s.LastAppliedAt != base.LastAppliedAt {
+		out.LastAppliedAt = s.LastAppliedAt
+	}
+
+	baseBy := map[string]Site{}
+	for _, site := range base.Sites {
+		baseBy[site.Slug] = site
+	}
+	mine := map[string]Site{}
+	for _, site := range s.Sites {
+		mine[site.Slug] = site
+	}
+	result := map[string]Site{}
+	var order []string
+	for _, site := range out.Sites {
+		result[site.Slug] = site
+		order = append(order, site.Slug)
+	}
+	for slug, m := range mine {
+		if b, ok := baseBy[slug]; ok && reflect.DeepEqual(normalizeSite(b), normalizeSite(m)) {
+			continue // unchanged here; keep whatever is on disk
+		}
+		if _, ok := result[slug]; !ok {
+			order = append(order, slug)
+		}
+		result[slug] = m
+	}
+	for slug := range baseBy {
+		if _, ok := mine[slug]; !ok {
+			delete(result, slug) // deleted here
+		}
+	}
+	out.Sites = out.Sites[:0]
+	for _, slug := range order {
+		if site, ok := result[slug]; ok {
+			out.Sites = append(out.Sites, site)
+		}
+	}
+	return out
+}
+
+// normalizeSite makes nil and empty alias lists compare equal.
+func normalizeSite(s Site) Site {
+	if len(s.Aliases) == 0 {
+		s.Aliases = nil
+	}
+	return s
 }
 
 // Path reports where this registry is stored.

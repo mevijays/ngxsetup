@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"ngxsetup/internal/db"
+	"ngxsetup/internal/logx"
 	"ngxsetup/internal/migrate"
 	"ngxsetup/internal/site"
 	"ngxsetup/internal/state"
@@ -64,12 +66,17 @@ func (c *Ctx) MigrateAllocateSite(req MigrateSiteRequest) (*state.Site, error) {
 		return nil, fmt.Errorf("PHP is not installed; run `ngxsetup setup` first")
 	}
 
+	aliases, err := c.claimAliases(domain, req.Aliases, "")
+	if err != nil {
+		return nil, err
+	}
+
 	slug := site.UniqueSlug(domain, c.State.SlugTaken)
 	user := site.UserName(slug)
 	rec := state.Site{
 		Slug:       slug,
 		Domain:     domain,
-		Aliases:    dedupeAliases(domain, req.Aliases),
+		Aliases:    aliases,
 		Root:       c.DocumentRoot(slug),
 		User:       user,
 		SocketPath: c.SocketPath(slug),
@@ -98,12 +105,18 @@ func (c *Ctx) MigrateAbortSite(rec *state.Site) {
 	if rec == nil || c.Writer.DryRun {
 		return
 	}
-	if err := c.RemoveSite(rec.Slug, true, true); err != nil {
-		// Best effort: the operator is already looking at a failed
-		// migration in the log; a second warning about cleanup itself
-		// failing is useful but must not replace the real error.
-		fmt.Fprintf(os.Stderr, "cleaning up %s after a failed migration: %v\n", rec.Domain, err)
-	}
+	// A fresh context: when the migration was cancelled, c.Context is
+	// already done and every cleanup command would fail with it, leaving the
+	// half-migrated site registered with its database and account intact.
+	c.detached(func() {
+		c.StopWPCronTimer(rec.Slug, true)
+		if err := c.RemoveSite(rec.Slug, true, true); err != nil {
+			// Best effort: the operator is already looking at a failed
+			// migration in the log; a second warning about cleanup itself
+			// failing is useful but must not replace the real error.
+			fmt.Fprintf(os.Stderr, "cleaning up %s after a failed migration: %v\n", rec.Domain, err)
+		}
+	})
 }
 
 // MigrateProvisionDatabase creates a brand new local database and account
@@ -172,6 +185,7 @@ func (c *Ctx) MigrateFinishSite(rec *state.Site, dbInfo migrate.WPConfigInfo, db
 			AdminMemoryLimit: tuning.MemString(c.Plan.PHP.CLIMemoryLimitMB),
 			DisableCron:      true,
 			AllowFileMods:    false,
+			ExtraDefines:     dbInfo.ExtraDefines,
 		})
 		if err != nil {
 			return err
@@ -183,11 +197,23 @@ func (c *Ctx) MigrateFinishSite(rec *state.Site, dbInfo migrate.WPConfigInfo, db
 		if err := c.chownRecursive(rec.Root, rec.User+":www-data"); err != nil {
 			return err
 		}
+		// The copied tree keeps the source server's modes, which this
+		// tool's isolation depends on not doing: without the setgid bit
+		// on directories, files WordPress creates later (uploads) would
+		// not inherit the www-data group, and nginx could not read them.
+		if c.Writer.Root == "" {
+			if err := applyModes(c.Path(rec.Root)); err != nil {
+				return err
+			}
+		}
 		if err := os.Chmod(wpConfigPath, 0o640); err != nil {
 			return err
 		}
 	}
 
+	if req.TLS {
+		c.dropUnresolvableAutoWWW(rec, req.Aliases)
+	}
 	sreq := SiteRequest{Domain: rec.Domain, Aliases: rec.Aliases, TLS: req.TLS, SelfSigned: req.SelfSigned}
 	if err := c.issueCertificate(rec, sreq); err != nil {
 		return err
@@ -197,6 +223,9 @@ func (c *Ctx) MigrateFinishSite(rec *state.Site, dbInfo migrate.WPConfigInfo, db
 		return err
 	}
 	if err := c.WriteFPMService(*rec); err != nil {
+		return err
+	}
+	if err := c.WriteWPCronUnits(*rec); err != nil {
 		return err
 	}
 	if err := c.ValidateNginx(); err != nil {
@@ -215,6 +244,9 @@ func (c *Ctx) MigrateFinishSite(rec *state.Site, dbInfo migrate.WPConfigInfo, db
 		c.State.Upsert(*rec)
 		if err := c.State.Save(); err != nil {
 			return err
+		}
+		if err := c.StartWPCronTimer(*rec); err != nil {
+			logx.Warn("scheduled WordPress tasks could not be enabled for %s: %v", rec.Domain, err)
 		}
 	}
 	return nil
@@ -366,6 +398,10 @@ func (c *Ctx) MigrateRunOne(ctx context.Context, remote migrate.RemoteConfig, ds
 		return fail("decompressing the database dump", err)
 	}
 	_ = os.Remove(localDumpGz)
+	if err := db.CheckDumpComplete(localDumpSQL); err != nil {
+		_ = os.Remove(localDumpSQL)
+		return fail("checking the database dump", err)
+	}
 
 	progress.Step("restoring the database")
 	password, err := c.MigrateProvisionDatabase(rec, localDumpSQL)

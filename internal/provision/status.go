@@ -110,6 +110,11 @@ func (c *Ctx) ReloadServices() error {
 	// the shared unit would do nothing useful — it is disabled and owns no
 	// pools — while missing every service that actually serves traffic.
 	for _, s := range c.State.Sites {
+		if !s.Enabled {
+			// reload-or-restart would start a disabled site's stopped
+			// service again.
+			continue
+		}
 		unit := fpmUnitFor(s.Slug)
 		if !system.UnitExists(c.Context, c.Runner, unit) {
 			continue
