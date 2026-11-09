@@ -95,6 +95,11 @@ sudo ngxsetup ssl issue example.com    # after starting with --self-signed
 sudo ngxsetup ssl renew                # renews everything due
 ```
 
+certbot's own timer also renews certificates in the background; a deploy
+hook (`/etc/letsencrypt/renewal-hooks/deploy/ngxsetup-reload-nginx.sh`)
+reloads nginx after every renewal so the new certificate is actually
+served.
+
 ## `config`
 
 ```bash
@@ -115,9 +120,9 @@ sudo ngxsetup secure --apply
 ## `web`
 
 ```bash
-sudo ngxsetup web                        # binds 0.0.0.0, random port
-sudo ngxsetup web --port 8443             # pin the port (open it ahead of time)
-sudo ngxsetup web --bind 127.0.0.1        # local/VPN-only, e.g. behind an SSH tunnel
+sudo ngxsetup web                        # binds 127.0.0.1, random port; reach it over an SSH tunnel
+sudo ngxsetup web --port 8443             # pin the port
+sudo ngxsetup web --bind 0.0.0.0          # every interface (opens the port in ufw for the session)
 ```
 
 ## `migrate`

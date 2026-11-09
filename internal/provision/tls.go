@@ -58,6 +58,9 @@ func (c *Ctx) issueLetsEncrypt(rec *state.Site) error {
 	if err := c.Writer.EnsureDir(ACMERoot, 0o755, "www-data"); err != nil {
 		return err
 	}
+	if err := c.EnsureCertbotReloadHook(); err != nil {
+		return err
+	}
 
 	args := []string{"certonly", "--webroot", "-w", c.Path(ACMERoot),
 		"--email", c.Config.ACMEEmail, "--agree-tos", "--non-interactive",
@@ -195,6 +198,9 @@ func (c *Ctx) RenewCertificates() error {
 	if !c.Runner.Look("certbot") {
 		return fmt.Errorf("certbot is not installed")
 	}
+	if err := c.EnsureCertbotReloadHook(); err != nil {
+		return err
+	}
 	logx.Step("renewing certificates")
 	if err := c.Runner.Run(c.Context, "certbot", "renew", "--webroot", "-w", c.Path(ACMERoot), "--quiet"); err != nil {
 		return err
@@ -222,4 +228,32 @@ func generateSalts() ([]tmpl.Salt, error) {
 		out = append(out, tmpl.Salt{Name: n, Value: v})
 	}
 	return out, nil
+}
+
+// CertbotReloadHook is run by certbot after every successful renewal, from
+// certbot's own systemd timer as well as from `ngxsetup ssl renew`.
+const CertbotReloadHook = "/etc/letsencrypt/renewal-hooks/deploy/ngxsetup-reload-nginx.sh"
+
+// EnsureCertbotReloadHook installs the deploy hook that reloads nginx after a
+// renewal. certbot's packaged timer renews certificates on disk on its own,
+// but nginx keeps serving the certificate it loaded at its last reload — so
+// without this hook a renewed certificate is never picked up, and the old
+// one is served until it expires.
+func (c *Ctx) EnsureCertbotReloadHook() error {
+	body := "#!/bin/sh\n" + tmpl.ManagedHeader + "\n" +
+		"# Reload nginx so it serves the certificate certbot just renewed.\n" +
+		"nginx -t -q && systemctl reload nginx\n"
+	_, err := c.Writer.Write(CertbotReloadHook, []byte(body), 0o755, false)
+	return err
+}
+
+// hasLetsEncryptSite reports whether any registered site uses a certificate
+// certbot renews.
+func (c *Ctx) hasLetsEncryptSite() bool {
+	for _, s := range c.State.Sites {
+		if s.CertSource == "letsencrypt" {
+			return true
+		}
+	}
+	return false
 }

@@ -104,6 +104,7 @@ func (c *Ctx) PlanUninstall(opts UninstallOptions) UninstallPlan {
 		FPMConfigDir,
 		FPMUnitTemplate,
 		"/etc/tmpfiles.d/ngxsetup.conf",
+		CertbotReloadHook,
 		"/usr/local/bin/ngxsetup", "/usr/local/bin/vhostsetup", "/usr/local/bin/fixperm",
 		"/usr/local/bin/mysqltune", "/usr/local/bin/loadcheck",
 		ConfigDir, StateDir,

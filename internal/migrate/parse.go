@@ -166,17 +166,90 @@ type WPConfigInfo struct {
 	DBPassword  string
 	DBHost      string
 	TablePrefix string
+	// ExtraDefines are the source's own define(...) statements for
+	// constants the generated wp-config.php does not set itself —
+	// multisite settings, WP_CACHE, plugin licence keys, Redis settings —
+	// carried over verbatim so the migrated site behaves the same.
+	ExtraDefines []string
 }
 
+// defineValue returns a string constant's value, honouring the quote style
+// it was written with: a password may well contain the other kind of quote,
+// or an escaped one of its own.
 func defineValue(raw, constant string) string {
-	re := regexp.MustCompile(`define\s*\(\s*['"]` + regexp.QuoteMeta(constant) + `['"]\s*,\s*['"]([^'"]*)['"]`)
-	if m := re.FindStringSubmatch(raw); m != nil {
-		return m[1]
+	re := regexp.MustCompile(`define\s*\(\s*['"]` + regexp.QuoteMeta(constant) +
+		`['"]\s*,\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")`)
+	if m := re.FindStringSubmatchIndex(raw); m != nil {
+		if m[2] >= 0 {
+			return unescapePHPSingle(raw[m[2]:m[3]])
+		}
+		if m[4] >= 0 {
+			return unescapePHPDouble(raw[m[4]:m[5]])
+		}
 	}
 	return ""
 }
 
 var tablePrefixLine = regexp.MustCompile(`(?m)^\s*\$table_prefix\s*=\s*['"]([^'"]*)['"]`)
+
+// unescapePHPSingle undoes the two escapes a single-quoted PHP string has.
+func unescapePHPSingle(s string) string {
+	return strings.NewReplacer(`\\`, `\`, `\'`, `'`).Replace(s)
+}
+
+// unescapePHPDouble undoes the escapes that plausibly appear in a
+// double-quoted credential.
+func unescapePHPDouble(s string) string {
+	return strings.NewReplacer(`\\`, `\`, `\"`, `"`, `\$`, `$`).Replace(s)
+}
+
+// generatedDefines are the constants the generated wp-config.php sets
+// itself; a source copy of any of them would be a duplicate define.
+var generatedDefines = map[string]bool{
+	"DB_NAME": true, "DB_USER": true, "DB_PASSWORD": true, "DB_HOST": true,
+	"DB_CHARSET": true, "DB_COLLATE": true,
+	"AUTH_KEY": true, "SECURE_AUTH_KEY": true, "LOGGED_IN_KEY": true, "NONCE_KEY": true,
+	"AUTH_SALT": true, "SECURE_AUTH_SALT": true, "LOGGED_IN_SALT": true, "NONCE_SALT": true,
+	"DISALLOW_FILE_EDIT": true, "DISALLOW_FILE_MODS": true, "DISABLE_WP_CRON": true,
+	"WP_MEMORY_LIMIT": true, "WP_MAX_MEMORY_LIMIT": true,
+	"WP_POST_REVISIONS": true, "EMPTY_TRASH_DAYS": true, "AUTOSAVE_INTERVAL": true,
+	"WP_DEBUG": true, "WP_DEBUG_DISPLAY": true, "WP_DEBUG_LOG": true,
+	"WP_HOME": true, "WP_SITEURL": true, "ABSPATH": true,
+}
+
+var defineStatement = regexp.MustCompile(`^\s*(define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*,.*\)\s*;)`)
+
+// extraDefines collects the single-line define(...) statements a
+// wp-config.php makes outside comments, other than the ones the generated
+// config sets itself. A define split over several lines, or wrapped in a
+// conditional, is not carried over.
+func extraDefines(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	inBlock := false
+	for _, line := range strings.Split(raw, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if inBlock {
+			if strings.Contains(trimmed, "*/") {
+				inBlock = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "/*") {
+			if !strings.Contains(trimmed[2:], "*/") {
+				inBlock = true
+			}
+			continue
+		}
+		m := defineStatement.FindStringSubmatch(line)
+		if m == nil || generatedDefines[m[2]] || seen[m[2]] {
+			continue
+		}
+		seen[m[2]] = true
+		out = append(out, m[1])
+	}
+	return out
+}
 
 // ParseWPConfig reads the database constants and table prefix out of a
 // wp-config.php's source. Deliberately tolerant of formatting — single or
@@ -208,10 +281,11 @@ func ParseWPConfig(raw string) (WPConfigInfo, bool) {
 		prefix = m[1]
 	}
 	return WPConfigInfo{
-		DBName:      name,
-		DBUser:      user,
-		DBPassword:  defineValue(raw, "DB_PASSWORD"),
-		DBHost:      host,
-		TablePrefix: prefix,
+		DBName:       name,
+		DBUser:       user,
+		DBPassword:   defineValue(raw, "DB_PASSWORD"),
+		DBHost:       host,
+		TablePrefix:  prefix,
+		ExtraDefines: extraDefines(raw),
 	}, true
 }

@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -220,7 +221,7 @@ func (s *Server) handleTuneApply(w http.ResponseWriter, r *http.Request) {
 	}
 	output, err := runCaptured(func() error {
 		opts := provision.Options{Profile: req.Profile, AvgPHPWorkerMB: req.WorkerMB, ReserveMB: req.ReserveMB}
-		c, err := provision.New(r.Context(), opts)
+		c, err := provision.New(actionContext(r), opts)
 		if err != nil {
 			return err
 		}
@@ -340,7 +341,7 @@ func (s *Server) handleSiteAdd(w http.ResponseWriter, r *http.Request) {
 
 	var created *state.Site
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -389,7 +390,7 @@ func (s *Server) handleSiteRemove(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -402,7 +403,7 @@ func (s *Server) handleSiteEnable(enabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		domain := r.PathValue("domain")
 		output, err := runCaptured(func() error {
-			c, err := newCtx(r.Context(), false)
+			c, err := newCtx(actionContext(r), false)
 			if err != nil {
 				return err
 			}
@@ -415,7 +416,7 @@ func (s *Server) handleSiteEnable(enabled bool) http.HandlerFunc {
 func (s *Server) handleSiteFixPerms(w http.ResponseWriter, r *http.Request) {
 	domain := r.PathValue("domain")
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -459,7 +460,7 @@ func (s *Server) handleSecurityScan(w http.ResponseWriter, r *http.Request) {
 	_ = readJSON(r, &req)
 
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -471,7 +472,7 @@ func (s *Server) handleSecurityScan(w http.ResponseWriter, r *http.Request) {
 		critical := 0
 		for _, target := range targets {
 			logx.Section("Scanning %s", target.Domain)
-			report, err := scanner.Scan(r.Context(), target)
+			report, err := scanner.Scan(actionContext(r), target)
 			if err != nil {
 				logx.Error("%v", err)
 				continue
@@ -582,7 +583,7 @@ func (s *Server) handleSecurityPatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -595,7 +596,7 @@ func (s *Server) handleSecurityPatch(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("wp-cli is not installed")
 		}
 		logx.Section("Checking %s", req.Domain)
-		full, err := wp.PlanPatch(r.Context(), req.Domain)
+		full, err := wp.PlanPatch(actionContext(r), req.Domain)
 		if err != nil {
 			return err
 		}
@@ -606,7 +607,7 @@ func (s *Server) handleSecurityPatch(w http.ResponseWriter, r *http.Request) {
 		for _, line := range plan.Describe() {
 			logx.Bullet("%s", line)
 		}
-		result := wp.ApplyPatch(r.Context(), &plan)
+		result := wp.ApplyPatch(actionContext(r), &plan)
 		if result.CoreUpdated {
 			logx.Change("%s: WordPress core updated to %s", req.Domain, plan.CoreUpdate)
 		}
@@ -637,7 +638,7 @@ func (s *Server) handleSecurityPatch(w http.ResponseWriter, r *http.Request) {
 // SSHing in to run `apt install clamav` after a scan reports it missing.
 func (s *Server) handleSecurityInstallClamAV(w http.ResponseWriter, r *http.Request) {
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -764,7 +765,7 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 
 	var data any
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -805,10 +806,24 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 const maxRestoreUploadBytes = 2 << 30 // 2 GiB
 
 func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
+	// Bound the body itself, not just the reported part size: without this
+	// an arbitrarily large upload is written to disk in full before any
+	// size check gets a chance to run.
+	r.Body = http.MaxBytesReader(w, r.Body, maxRestoreUploadBytes+(1<<20))
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "file is too large")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, "expected a multipart form with a 'file' upload")
 		return
 	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
 	domain := r.FormValue("domain")
 	existingPath := r.FormValue("existing_path") // pick from an already-listed backup instead of uploading
 	noSafety := r.FormValue("no_safety_backup") == "true"
@@ -822,9 +837,22 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sqlPath := existingPath
-	var tmpFile string
-	if sqlPath == "" {
+	var sqlPath string
+	if existingPath != "" {
+		// The same check download and delete use: only a real .sql file
+		// inside the backup directory, never an arbitrary path on disk.
+		c, err := newCtx(r.Context(), false)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		full, _, err := resolveBackupPath(c, existingPath)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		sqlPath = full
+	} else {
 		file, header, err := r.FormFile("file")
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "attach a .sql file, or set existing_path to a listed backup")
@@ -848,25 +876,15 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 		}
 		tmp.Close()
 		sqlPath = tmp.Name()
-		tmpFile = tmp.Name()
-	}
-	if tmpFile != "" {
-		defer os.Remove(tmpFile)
 	}
 
 	var data any
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
-		// existingPath is relative to DefaultBackupDir when it came from the
-		// listing endpoint; resolve it the same way ListBackups reported it.
-		path := sqlPath
-		if existingPath != "" && !filepath.IsAbs(existingPath) {
-			path = c.Path(existingPath)
-		}
-		res, err := c.RestoreDatabase(domain, path, noSafety)
+		res, err := c.RestoreDatabase(domain, sqlPath, noSafety)
 		data = res
 		return err
 	})
@@ -896,7 +914,7 @@ func (s *Server) handleConfigSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -923,7 +941,7 @@ func (s *Server) handleCachePurge(w http.ResponseWriter, r *http.Request) {
 	var req domainRequest
 	_ = readJSON(r, &req)
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -962,7 +980,7 @@ func (s *Server) handleSSLIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -973,7 +991,7 @@ func (s *Server) handleSSLIssue(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSSLRenew(w http.ResponseWriter, r *http.Request) {
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -1001,7 +1019,7 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -1025,7 +1043,7 @@ func (s *Server) handleSecure(w http.ResponseWriter, r *http.Request) {
 	_ = readJSON(r, &req)
 
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -1092,7 +1110,7 @@ func (s *Server) handleUninstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}

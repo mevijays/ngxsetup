@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RemoteConfig identifies the server to migrate from and how to reach it.
@@ -272,26 +273,92 @@ func (c Client) DumpDatabase(ctx context.Context, info WPConfigInfo, remoteDumpP
 	}
 
 	cnfPath := remoteDir + "/.my.cnf"
-	cnfContent := fmt.Sprintf("[client]\nuser=%s\npassword=%s\nhost=%s\n", info.DBUser, info.DBPassword, info.DBHost)
-	if err := c.writeRemoteFile(ctx, cnfPath, cnfContent, "600"); err != nil {
+	if err := c.writeRemoteFile(ctx, cnfPath, myCnf(info), "600"); err != nil {
 		return fmt.Errorf("writing remote database credentials file: %w", err)
 	}
-	defer func() { _, _ = c.Run(ctx, "rm -f "+shellQuote(cnfPath)) }()
+	// Removed even when the dump was cancelled: this file holds the source
+	// database's password in plain text.
+	defer c.RemoveRemotePath(ctx, cnfPath)
 
+	// The dump's exit status is captured explicitly: in a plain
+	// `mysqldump | gzip` pipeline the shell reports gzip's status, so a
+	// failed dump (wrong password, missing database, server gone away)
+	// would still "succeed" and produce a valid, empty or truncated archive.
+	// pipefail is not POSIX sh, so the status travels through a file.
+	rcPath := remoteDumpPath + ".rc"
 	dumpCmd := fmt.Sprintf(
-		"mysqldump --defaults-extra-file=%s --single-transaction --quick --no-tablespaces --default-character-set=utf8mb4 %s | gzip -c > %s",
-		shellQuote(cnfPath), shellQuote(info.DBName), shellQuote(remoteDumpPath))
+		"(mysqldump --defaults-extra-file=%s --single-transaction --quick --no-tablespaces --default-character-set=utf8mb4 %s; echo $? > %s) | gzip -c > %s && test \"$(cat %s)\" = 0; rc=$?; rm -f %s; exit $rc",
+		shellQuote(cnfPath), shellQuote(info.DBName), shellQuote(rcPath), shellQuote(remoteDumpPath),
+		shellQuote(rcPath), shellQuote(rcPath))
 	if _, err := c.RunRetry(ctx, DefaultMaxAttempts, dumpCmd); err != nil {
 		return fmt.Errorf("dumping the remote database: %w", err)
 	}
 	return nil
 }
 
-// RemoveRemotePath deletes one file or directory on the remote host — used
-// to clean up the staging dump this package created, never anything the
-// operator's site itself owns.
+// myCnf renders a client option file for the source database's
+// credentials. Values are double-quoted with backslash escapes — unquoted,
+// a '#' anywhere in a password starts a comment and silently truncates it —
+// and WordPress's DB_HOST forms "host:port" and "host:/path/to.sock" are
+// split into the separate options the client expects.
+func myCnf(info WPConfigInfo) string {
+	host, port, socket := splitDBHost(info.DBHost)
+	var b strings.Builder
+	b.WriteString("[client]\n")
+	fmt.Fprintf(&b, "user=%s\n", optionValue(info.DBUser))
+	fmt.Fprintf(&b, "password=%s\n", optionValue(info.DBPassword))
+	fmt.Fprintf(&b, "host=%s\n", optionValue(host))
+	if port != "" {
+		fmt.Fprintf(&b, "port=%s\n", port)
+	}
+	if socket != "" {
+		fmt.Fprintf(&b, "socket=%s\n", optionValue(socket))
+	}
+	return b.String()
+}
+
+func optionValue(v string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(v) + `"`
+}
+
+// splitDBHost splits a WordPress DB_HOST into host, port and socket.
+func splitDBHost(dbHost string) (host, port, socket string) {
+	dbHost = strings.TrimSpace(dbHost)
+	if dbHost == "" {
+		return "localhost", "", ""
+	}
+	if strings.HasPrefix(dbHost, "[") { // [IPv6]:port
+		if end := strings.Index(dbHost, "]"); end > 0 {
+			host = dbHost[1:end]
+			if rest := dbHost[end+1:]; strings.HasPrefix(rest, ":") {
+				port = rest[1:]
+			}
+			return host, port, ""
+		}
+	}
+	if strings.Count(dbHost, ":") != 1 {
+		return dbHost, "", "" // a bare IPv6 address, or no port at all
+	}
+	h, rest, _ := strings.Cut(dbHost, ":")
+	if h == "" {
+		h = "localhost"
+	}
+	if strings.HasPrefix(rest, "/") {
+		return h, "", rest
+	}
+	if _, err := strconv.Atoi(rest); err == nil {
+		return h, rest, ""
+	}
+	return dbHost, "", ""
+}
+
+// RemoveRemotePath deletes a path on the remote host. It is cleanup, so it
+// runs even when ctx has been cancelled — that is exactly when a migration
+// is being abandoned and its staging files most need removing.
 func (c Client) RemoveRemotePath(ctx context.Context, remotePath string) {
-	_, _ = c.Run(ctx, "rm -rf "+shellQuote(remotePath))
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	_, _ = c.Run(cctx, "rm -rf "+shellQuote(remotePath))
 }
 
 // ---- transfer (rsync) ------------------------------------------------------

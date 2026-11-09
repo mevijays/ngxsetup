@@ -3,6 +3,7 @@ package webui
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"os"
 	"sync"
 
@@ -39,6 +40,18 @@ func runCaptured(fn func() error) (output string, err error) {
 
 	err = fn()
 	return buf.String(), err
+}
+
+// actionContext is the context a mutating action runs under: the request's,
+// minus its cancellation. A request's context is cancelled the moment the
+// browser disconnects — a closed tab, a laptop going to sleep, a proxy
+// timeout — and every command the action is running (apt, mysql, certbot)
+// is killed with it, leaving whatever it was doing half-done. An action,
+// once started, runs to completion instead, the same as a CLI command whose
+// terminal stays open; the per-command timeouts in system.Runner still
+// bound it.
+func actionContext(r *http.Request) context.Context {
+	return context.WithoutCancel(r.Context())
 }
 
 // newCtx builds a provision.Ctx the same way the CLI does for one command.

@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -184,7 +185,7 @@ $table_prefix = 'wp_';
 		t.Fatal("ParseWPConfig reported not-a-WordPress-config for a well-formed file")
 	}
 	want := WPConfigInfo{DBName: "wp_prod", DBUser: "wp_prod_user", DBPassword: "hunter2!", DBHost: "localhost", TablePrefix: "wp_"}
-	if info != want {
+	if !reflect.DeepEqual(info, want) {
 		t.Errorf("ParseWPConfig = %+v, want %+v", info, want)
 	}
 }
@@ -264,5 +265,51 @@ func TestExtractServerBlocksHandlesNestedBraces(t *testing.T) {
 	}
 	if !strings.HasSuffix(strings.TrimSpace(blocks[0]), "}") {
 		t.Errorf("block does not end at the matching closing brace")
+	}
+}
+
+// A password may contain the other kind of quote, or an escaped quote of its
+// own; the earlier [^'"]* pattern cut it short at the first quote of either
+// kind, and the remote dump then failed to authenticate.
+func TestParseWPConfigPasswordsWithQuotes(t *testing.T) {
+	cases := map[string]string{
+		`define( 'DB_PASSWORD', 'a"b#c' );`:  `a"b#c`,
+		`define( 'DB_PASSWORD', 'it\'s' );`:  `it's`,
+		`define( "DB_PASSWORD", "x'y\"z" );`: `x'y"z`,
+		`define( 'DB_PASSWORD', '' );`:       ``,
+	}
+	for line, want := range cases {
+		raw := "<?php\ndefine('DB_NAME','d');\ndefine('DB_USER','u');\n" + line + "\n"
+		info, ok := ParseWPConfig(raw)
+		if !ok || info.DBPassword != want {
+			t.Errorf("%s -> %q, want %q", line, info.DBPassword, want)
+		}
+	}
+}
+
+func TestParseWPConfigCarriesOverCustomDefines(t *testing.T) {
+	raw := `<?php
+define( 'DB_NAME', 'd' );
+define( 'DB_USER', 'u' );
+define( 'WP_DEBUG', true );
+define( 'WP_CACHE', true ); // Added by WP Rocket
+define('MULTISITE', true);
+define( 'DOMAIN_CURRENT_SITE', 'example.com' );
+// define( 'COMMENTED_OUT', true );
+/*
+define( 'IN_A_BLOCK', true );
+*/
+/* define( 'ONE_LINE_BLOCK', 1 ); */
+define( 'WP_CACHE', false );
+$table_prefix = 'wp_';
+`
+	info, _ := ParseWPConfig(raw)
+	want := []string{
+		"define( 'WP_CACHE', true );",
+		"define('MULTISITE', true);",
+		"define( 'DOMAIN_CURRENT_SITE', 'example.com' );",
+	}
+	if !reflect.DeepEqual(info.ExtraDefines, want) {
+		t.Errorf("ExtraDefines = %q, want %q", info.ExtraDefines, want)
 	}
 }

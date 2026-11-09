@@ -76,11 +76,11 @@ func (s *Server) handleDBManageUserCreate(w http.ResponseWriter, r *http.Request
 		req.Host = "localhost"
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
-		if err := c.DBClient().CreateManagedUser(r.Context(), req.User, req.Host, req.Password); err != nil {
+		if err := c.DBClient().CreateManagedUser(c.Context, req.User, req.Host, req.Password); err != nil {
 			return err
 		}
 		logx.Change("created database user %s@%s", req.User, req.Host)
@@ -101,11 +101,11 @@ func (s *Server) handleDBManageUserDrop(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
-		if err := c.DBClient().DropManagedUser(r.Context(), req.User, req.Host); err != nil {
+		if err := c.DBClient().DropManagedUser(c.Context, req.User, req.Host); err != nil {
 			return err
 		}
 		logx.Change("dropped database user %s@%s", req.User, req.Host)
@@ -128,11 +128,11 @@ func (s *Server) handleDBManageGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
-		if err := c.DBClient().GrantPrivileges(r.Context(), req.User, req.Host, req.Database, req.Privileges); err != nil {
+		if err := c.DBClient().GrantPrivileges(c.Context, req.User, req.Host, req.Database, req.Privileges); err != nil {
 			return err
 		}
 		logx.Change("granted %v on %s to %s@%s", req.Privileges, req.Database, req.User, req.Host)
@@ -148,11 +148,11 @@ func (s *Server) handleDBManageRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
-		if err := c.DBClient().RevokeAllPrivileges(r.Context(), req.User, req.Host, req.Database); err != nil {
+		if err := c.DBClient().RevokeAllPrivileges(c.Context, req.User, req.Host, req.Database); err != nil {
 			return err
 		}
 		logx.Change("revoked all privileges on %s from %s@%s", req.Database, req.User, req.Host)
@@ -237,16 +237,16 @@ func (s *Server) handleDBManageRowUpdate(w http.ResponseWriter, r *http.Request)
 	}
 	dbName, table := r.PathValue("db"), r.PathValue("table")
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
 		client := c.DBClient()
-		cols, err := client.TableColumns(r.Context(), dbName, table)
+		cols, err := client.TableColumns(c.Context, dbName, table)
 		if err != nil {
 			return err
 		}
-		if err := client.UpdateRow(r.Context(), dbName, table, cols, req.PrimaryKey, req.Changes); err != nil {
+		if err := client.UpdateRow(c.Context, dbName, table, cols, req.PrimaryKey, req.Changes); err != nil {
 			return err
 		}
 		logx.Change("updated a row in %s.%s", dbName, table)

@@ -1,10 +1,13 @@
 package provision
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"ngxsetup/internal/db"
 	"ngxsetup/internal/logx"
@@ -46,7 +49,7 @@ type SiteRequest struct {
 // possible: the account and directories come first because they are cheap to
 // remove, the database next, and nginx last so a half-built site is never
 // reachable.
-func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
+func (c *Ctx) AddSite(req SiteRequest) (_ *state.Site, err error) {
 	domain := site.NormalizeDomain(req.Domain)
 	if err := site.ValidateDomain(domain); err != nil {
 		return nil, err
@@ -67,13 +70,17 @@ func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
 	if c.PHPVersion == "" {
 		return nil, fmt.Errorf("PHP is not installed; run `ngxsetup setup` first")
 	}
+	aliases, err := c.claimAliases(domain, req.Aliases, "")
+	if err != nil {
+		return nil, err
+	}
 
 	slug := site.UniqueSlug(domain, c.State.SlugTaken)
 	user := site.UserName(slug)
 	rec := state.Site{
 		Slug:         slug,
 		Domain:       domain,
-		Aliases:      dedupeAliases(domain, req.Aliases),
+		Aliases:      aliases,
 		Root:         c.DocumentRoot(slug),
 		User:         user,
 		SocketPath:   c.SocketPath(slug),
@@ -83,6 +90,19 @@ func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
 		Enabled:      true,
 	}
 
+	// A wp-config.php already sitting in the document root belongs to an
+	// earlier install of this slug — typically one removed without
+	// --purge-files. Installing over it would keep that file (it is written
+	// only if absent) while this run provisions a brand-new database, so the
+	// site would keep running against the old database while the registry,
+	// backups and restores all pointed at the new, empty one.
+	if req.WordPress {
+		if _, statErr := os.Stat(filepath.Join(c.Path(rec.Root), "wp-config.php")); statErr == nil {
+			return nil, fmt.Errorf("%s already contains a wp-config.php from an earlier install of %s; "+
+				"move %s aside (or delete it) before creating the site again", rec.Root, domain, c.SiteRoot(slug))
+		}
+	}
+
 	logx.Section("Creating %s", domain)
 	logx.KV([][2]string{
 		{"slug", slug},
@@ -90,6 +110,20 @@ func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
 		{"system user", user},
 		{"php pool", rec.SocketPath},
 	})
+
+	// Everything below creates something. If any step fails, undo what this
+	// attempt created so that re-running the same command (which the error
+	// messages below suggest) starts from a clean slate instead of building
+	// on half a site.
+	undo := addSiteUndo{
+		baseExisted: pathExists(c.Path(c.SiteRoot(slug))),
+		userExisted: system.UserExists(user),
+	}
+	defer func() {
+		if err != nil && !c.Writer.DryRun {
+			c.undoAddSite(rec, undo)
+		}
+	}()
 
 	if err := c.createSiteAccount(rec); err != nil {
 		return nil, err
@@ -113,9 +147,14 @@ func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
 		if err := client.Provision(c.Context, rec.DBName, rec.DBUser, dbPassword, "localhost", c.Plan.DB.Collation); err != nil {
 			return nil, err
 		}
+		undo.dbCreated = true
 		if err := c.installWordPress(rec, dbPassword, suffix, req); err != nil {
 			return nil, err
 		}
+	}
+
+	if req.TLS {
+		c.dropUnresolvableAutoWWW(&rec, req.Aliases)
 	}
 
 	// Certificates before the vhost, so the server block never references a
@@ -132,6 +171,9 @@ func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
 	// and its memory ceiling. Written before nginx is reloaded so the socket
 	// exists by the time nginx starts routing to it.
 	if err := c.WriteFPMService(rec); err != nil {
+		return nil, err
+	}
+	if err := c.WriteWPCronUnits(rec); err != nil {
 		return nil, err
 	}
 
@@ -151,6 +193,7 @@ func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
 		if err := c.StartFPMService(rec.Slug); err != nil {
 			return nil, err
 		}
+		undo.nginxTouched = true
 		if err := system.Reload(c.Context, c.Runner, "nginx.service"); err != nil {
 			return nil, err
 		}
@@ -159,7 +202,14 @@ func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
 	c.State.Upsert(rec)
 	if !c.Writer.DryRun {
 		if err := c.State.Save(); err != nil {
+			c.State.Delete(rec.Slug)
 			return nil, err
+		}
+		// Registered: from here on the site is complete and a failure below
+		// must not tear it down.
+		c.Writer.Commit()
+		if err := c.StartWPCronTimer(rec); err != nil {
+			logx.Warn("scheduled WordPress tasks could not be enabled: %v (re-run `ngxsetup tune --apply` to retry)", err)
 		}
 		if req.WordPress {
 			if err := c.writeCredentials(rec, dbPassword, req); err != nil {
@@ -168,6 +218,109 @@ func (c *Ctx) AddSite(req SiteRequest) (*state.Site, error) {
 		}
 	}
 	return &rec, nil
+}
+
+// addSiteUndo records what one AddSite attempt created, so a failure can
+// remove exactly that and nothing that existed before it.
+type addSiteUndo struct {
+	baseExisted  bool
+	userExisted  bool
+	dbCreated    bool
+	nginxTouched bool
+}
+
+// undoAddSite reverses a failed AddSite. It runs on a fresh context: when the
+// failure was a cancellation, the original context is already dead and every
+// cleanup command would fail immediately with it.
+func (c *Ctx) undoAddSite(rec state.Site, u addSiteUndo) {
+	c.detached(func() {
+		logx.Step("undoing the partial creation of %s", rec.Domain)
+		c.StopWPCronTimer(rec.Slug, true)
+		_ = c.StopFPMService(rec.Slug)
+		if err := c.Writer.Rollback(); err != nil {
+			logx.Warn("restoring configuration files: %v", err)
+		}
+		if u.dbCreated && rec.DBName != "" {
+			if err := c.dbClient().Drop(c.Context, rec.DBName, rec.DBUser, "localhost"); err != nil {
+				logx.Warn("removing database %s: %v", rec.DBName, err)
+			}
+		}
+		if !u.baseExisted {
+			if err := os.RemoveAll(c.Path(c.SiteRoot(rec.Slug))); err != nil {
+				logx.Warn("removing %s: %v", c.SiteRoot(rec.Slug), err)
+			}
+		}
+		if !u.userExisted && system.UserExists(rec.User) {
+			if err := system.DeleteSystemUser(c.Context, c.Runner, rec.User); err != nil {
+				logx.Warn("removing user %s: %v", rec.User, err)
+			}
+		}
+		if u.nginxTouched {
+			_ = system.Reload(c.Context, c.Runner, "nginx.service")
+		}
+		logx.Info("nothing from this attempt was left behind; fix the error above and run the command again")
+	})
+}
+
+// claimAliases normalises a new site's aliases and makes sure none of them
+// is already served by another site — nginx would otherwise silently route
+// that name to whichever server block it loaded first. An alias the operator
+// asked for is an error when taken; the www. alias this tool adds on its own
+// is simply dropped, with a warning.
+func (c *Ctx) claimAliases(domain string, requested []string, exceptSlug string) ([]string, error) {
+	explicit := map[string]bool{}
+	for _, a := range requested {
+		explicit[a] = true
+	}
+	var out []string
+	for _, a := range dedupeAliases(domain, requested) {
+		if c.State.DomainTaken(a, exceptSlug) {
+			if explicit[a] {
+				return nil, fmt.Errorf("alias %s is already served by an existing site (see `ngxsetup site list`)", a)
+			}
+			logx.Warn("%s is already served by another site; not adding it as an alias of %s", a, domain)
+			continue
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+// dropUnresolvableAutoWWW removes the automatically added www. alias when it
+// has no DNS record. Let's Encrypt validates every name on the certificate,
+// so a www. name nobody created would otherwise fail issuance for the whole
+// site. A www. alias the operator asked for explicitly is left alone.
+func (c *Ctx) dropUnresolvableAutoWWW(rec *state.Site, requested []string) {
+	if c.Writer.DryRun {
+		return
+	}
+	www := "www." + rec.Domain
+	for _, a := range requested {
+		if a == www {
+			return
+		}
+	}
+	idx := -1
+	for i, a := range rec.Aliases {
+		if a == www {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Context, 5*time.Second)
+	defer cancel()
+	if _, err := net.DefaultResolver.LookupHost(ctx, www); err == nil {
+		return
+	}
+	rec.Aliases = append(rec.Aliases[:idx:idx], rec.Aliases[idx+1:]...)
+	logx.Warn("%s has no DNS record, so it was left off the certificate and the site; add it later with an alias once DNS exists", www)
+}
+
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 // createSiteAccount builds the user and directory tree.
@@ -452,6 +605,7 @@ func (c *Ctx) RemoveSite(nameOrSlug string, purgeFiles, purgeDB bool) error {
 	// master config and pool. Removing the last site is no longer a special
 	// case — with one service per site there is no shared service left
 	// holding zero pools, so nothing needs propping up.
+	c.StopWPCronTimer(rec.Slug, true)
 	if err := c.StopFPMService(rec.Slug); err != nil {
 		return err
 	}
@@ -530,6 +684,21 @@ func (c *Ctx) SetEnabled(nameOrSlug string, enabled bool) error {
 	if !c.Writer.DryRun {
 		if err := system.Reload(c.Context, c.Runner, "nginx.service"); err != nil {
 			return err
+		}
+		// A disabled site's PHP workers and scheduler stop too: it serves no
+		// traffic, so they would only hold memory and keep running the
+		// site's cron jobs against a site that is meant to be off.
+		if enabled {
+			if err := c.StartFPMService(rec.Slug); err != nil {
+				return err
+			}
+			if err := c.StartWPCronTimer(*rec); err != nil {
+				logx.Warn("scheduled WordPress tasks could not be enabled: %v", err)
+			}
+		} else {
+			c.Runner.TryRun(c.Context, "systemctl", "disable", "--now", fpmUnitFor(rec.Slug))
+			c.StopWPCronTimer(rec.Slug, false)
+			logx.Change("stopped PHP-FPM and scheduled tasks for %s", rec.Domain)
 		}
 		return c.State.Save()
 	}

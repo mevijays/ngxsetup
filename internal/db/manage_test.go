@@ -1,6 +1,16 @@
 package db
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"ngxsetup/internal/system"
+)
+
+// offline is a client whose every query returns nothing (DryRun), which is
+// what a database that does not exist looks like to requireDatabase.
+func offline() Client { return Client{Runner: system.Runner{DryRun: true}} }
 
 // quoteIdent and quoteLiteral are the two primitives every dynamic query in
 // manage.go depends on for safety — get either wrong and every function
@@ -64,25 +74,38 @@ func TestQuoteLiteralOrderMatters(t *testing.T) {
 }
 
 func TestGrantPrivilegesValidatesBeforeExecuting(t *testing.T) {
-	c := Client{}
-	if err := c.GrantPrivileges(nil, "u", "localhost", "bad;db", []string{"SELECT"}); err == nil {
-		t.Error("accepted an unsafe database name")
+	c, ctx := offline(), context.Background()
+	if err := c.GrantPrivileges(ctx, "u", "localhost", "no_such_db", []string{"SELECT"}); err == nil {
+		t.Error("granted on a database that does not exist")
 	}
-	if err := c.GrantPrivileges(nil, "u", "localhost", "ok_db", nil); err == nil {
+	if err := c.GrantPrivileges(ctx, "u", "localhost", "mysql", []string{"SELECT"}); err == nil {
+		t.Error("granted on the mysql system schema")
+	}
+	if err := c.GrantPrivileges(ctx, "u", "localhost", "ok_db", nil); err == nil {
 		t.Error("accepted an empty privilege list")
 	}
-	if err := c.GrantPrivileges(nil, "u", "localhost", "ok_db", []string{"SUPER"}); err == nil {
+	if err := c.GrantPrivileges(ctx, "u", "localhost", "ok_db", []string{"SUPER"}); err == nil {
 		t.Error("accepted a non-managed privilege (SUPER)")
 	}
-	if err := c.GrantPrivileges(nil, "u", "localhost", "ok_db", []string{"SELECT; DROP DATABASE mysql"}); err == nil {
+	if err := c.GrantPrivileges(ctx, "u", "localhost", "ok_db", []string{"SELECT; DROP DATABASE mysql"}); err == nil {
 		t.Error("accepted a privilege string with SQL injected into it")
 	}
 }
 
-func TestRevokeAllPrivilegesValidatesIdentifier(t *testing.T) {
-	c := Client{}
-	if err := c.RevokeAllPrivileges(nil, "u", "localhost", "bad;db"); err == nil {
-		t.Error("accepted an unsafe database name")
+func TestRevokeAllPrivilegesRejectsUnknownDatabase(t *testing.T) {
+	if err := offline().RevokeAllPrivileges(context.Background(), "u", "localhost", "bad;db"); err == nil {
+		t.Error("revoked on a database that does not exist")
+	}
+}
+
+// Real databases can have names ValidateIdentifier would reject; the
+// browser accepts them (quoted) but never a system schema, in any case.
+func TestRequireDatabaseRefusesSystemSchemasWithoutQuerying(t *testing.T) {
+	c := Client{} // a real query would fail on the nil context; none must run
+	for _, name := range []string{"mysql", "MySQL", "information_schema", "performance_schema", "sys", ""} {
+		if err := c.requireDatabase(nil, name); err == nil {
+			t.Errorf("requireDatabase(%q) accepted a system/empty schema", name)
+		}
 	}
 }
 
@@ -102,24 +125,47 @@ func TestDropManagedUserRefusesBuiltinAccounts(t *testing.T) {
 	}
 }
 
-func TestListTablesValidatesIdentifier(t *testing.T) {
-	c := Client{}
-	if _, err := c.ListTables(nil, "bad;db"); err == nil {
-		t.Error("accepted an unsafe database name")
+func TestListTablesRejectsUnknownDatabase(t *testing.T) {
+	if _, err := offline().ListTables(context.Background(), "bad;db"); err == nil {
+		t.Error("listed tables of a database that does not exist")
 	}
 }
 
-func TestTableColumnsValidatesIdentifier(t *testing.T) {
-	c := Client{}
-	if _, err := c.TableColumns(nil, "bad;db", "t"); err == nil {
-		t.Error("accepted an unsafe database name")
+func TestTableColumnsRejectsUnknownDatabase(t *testing.T) {
+	if _, err := offline().TableColumns(context.Background(), "Mixed-Case DB", "t"); err == nil {
+		t.Error("described a table in a database that does not exist")
 	}
 }
 
-func TestTableRowsValidatesIdentifier(t *testing.T) {
-	c := Client{}
-	if _, _, err := c.TableRows(nil, "bad;db", "t", nil, 1, 100); err == nil {
-		t.Error("accepted an unsafe database name")
+func TestTableRowsRequiresColumns(t *testing.T) {
+	if _, _, err := (Client{}).TableRows(nil, "db", "t", nil, 1, 100); err == nil {
+		t.Error("fetched rows without a verified column list")
+	}
+}
+
+// One JSON object per line, with the server's own escaping of embedded
+// newlines and tabs — and no length cap, unlike a JSON_ARRAYAGG blob.
+func TestDecodeJSONRows(t *testing.T) {
+	raw := `{"ID": 1, "post_content": "line one\nline\ttwo", "post_parent": null}` + "\n" +
+		`{"ID": 18446744073709551615, "post_content": "", "post_parent": 0}` + "\n"
+	rows, err := decodeJSONRows(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	if rows[0]["post_content"] != "line one\nline\ttwo" {
+		t.Errorf("post_content = %q", rows[0]["post_content"])
+	}
+	if rows[0]["post_parent"] != nil {
+		t.Errorf("NULL decoded as %v, want nil", rows[0]["post_parent"])
+	}
+	if got := fmt.Sprint(rows[1]["ID"]); got != "18446744073709551615" {
+		t.Errorf("a large BIGINT did not round-trip exactly: %s", got)
+	}
+	if empty, err := decodeJSONRows(""); err != nil || len(empty) != 0 {
+		t.Errorf("empty output = %v, %v; want no rows", empty, err)
 	}
 }
 
@@ -150,12 +196,10 @@ func TestUpdateRowRequiresAllPrimaryKeyValues(t *testing.T) {
 	}
 }
 
-func TestUpdateRowValidatesIdentifier(t *testing.T) {
-	c := Client{}
-	cols := []ColumnInfo{{Name: "id", PrimaryKey: true}}
-	err := c.UpdateRow(nil, "bad;db", "t", cols, map[string]string{"id": "1"}, map[string]string{"id": "2"})
+func TestUpdateRowRequiresColumns(t *testing.T) {
+	err := (Client{}).UpdateRow(nil, "db", "t", nil, map[string]string{"id": "1"}, map[string]string{"id": "2"})
 	if err == nil {
-		t.Error("accepted an unsafe database name")
+		t.Error("updated a row without a verified column list")
 	}
 }
 

@@ -50,6 +50,29 @@ var systemSchemas = map[string]bool{
 	"sys":                true,
 }
 
+// requireDatabase confirms a client-supplied database name names a real,
+// non-system schema. The browser accepts any name MySQL/MariaDB itself
+// allows — mixed case, hyphens, a leading digit — since it shows databases
+// this tool did not create; this check plus quoteIdent is what makes that
+// safe, where ValidateIdentifier would simply reject a real database.
+func (c Client) requireDatabase(ctx context.Context, dbName string) error {
+	if dbName == "" || len(dbName) > 64 {
+		return fmt.Errorf("invalid database name %q", dbName)
+	}
+	if systemSchemas[strings.ToLower(dbName)] {
+		return fmt.Errorf("%s is a system schema and cannot be managed here", dbName)
+	}
+	out, err := c.Query(ctx, fmt.Sprintf(
+		"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME=%s;", quoteLiteral(dbName)))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(out) != "1" {
+		return fmt.Errorf("database %s not found", dbName)
+	}
+	return nil
+}
+
 // QueryRaw runs a statement and returns its single-field, single-row output
 // completely unescaped — used only for the JSON_ARRAYAGG(...) queries below,
 // where the point is to get back exactly one already-encoded JSON blob with
@@ -213,9 +236,6 @@ var managedPrivileges = map[string]bool{
 // a typo doesn't grant something narrower than the caller thought without
 // telling them.
 func (c Client) GrantPrivileges(ctx context.Context, user, host, dbName string, privileges []string) error {
-	if err := ValidateIdentifier(dbName); err != nil {
-		return err
-	}
 	if len(privileges) == 0 {
 		return fmt.Errorf("at least one privilege is required")
 	}
@@ -231,6 +251,9 @@ func (c Client) GrantPrivileges(ctx context.Context, user, host, dbName string, 
 			return fmt.Errorf("privilege %q is not permitted here", p)
 		}
 	}
+	if err := c.requireDatabase(ctx, dbName); err != nil {
+		return err
+	}
 	sql := fmt.Sprintf("GRANT %s ON %s.* TO %s@%s;",
 		strings.Join(list, ", "), quoteIdent(dbName), quoteLiteral(user), quoteLiteral(host))
 	return c.Exec(ctx, sql)
@@ -240,7 +263,7 @@ func (c Client) GrantPrivileges(ctx context.Context, user, host, dbName string, 
 // database, leaving the account (and its access to any other database)
 // otherwise untouched.
 func (c Client) RevokeAllPrivileges(ctx context.Context, user, host, dbName string) error {
-	if err := ValidateIdentifier(dbName); err != nil {
+	if err := c.requireDatabase(ctx, dbName); err != nil {
 		return err
 	}
 	sql := fmt.Sprintf("REVOKE ALL PRIVILEGES, GRANT OPTION ON %s.* FROM %s@%s;",
@@ -264,7 +287,7 @@ type TableInfo struct {
 // real COUNT(*) scoped to one table instead, where that cost is paid once
 // for a table an operator actually opened).
 func (c Client) ListTables(ctx context.Context, dbName string) ([]TableInfo, error) {
-	if err := ValidateIdentifier(dbName); err != nil {
+	if err := c.requireDatabase(ctx, dbName); err != nil {
 		return nil, err
 	}
 	sql := fmt.Sprintf(`SELECT t.TABLE_NAME, COALESCE(t.ENGINE,''), COALESCE(t.TABLE_ROWS,0),
@@ -315,7 +338,7 @@ type ColumnInfo struct {
 // TableColumns describes every column of one table, in their real column
 // order.
 func (c Client) TableColumns(ctx context.Context, dbName, table string) ([]ColumnInfo, error) {
-	if err := ValidateIdentifier(dbName); err != nil {
+	if err := c.requireDatabase(ctx, dbName); err != nil {
 		return nil, err
 	}
 	sql := fmt.Sprintf(`SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY
@@ -364,20 +387,24 @@ func parseColumns(raw string) []ColumnInfo {
 
 // TableRows returns one page of a table's rows (as column-name -> value,
 // value already stringified — this is a browsing/editing grid, not a
-// typed query API) together with the table's total row count.
+// typed query API) together with the table's total row count. cols must
+// come from TableColumns, which is what confirms the database and table
+// exist.
 //
-// Rows are fetched via JSON_ARRAYAGG/JSON_OBJECT and decoded from a single
-// JSON blob (QueryRaw, --raw) rather than this package's usual
-// tab-separated parsing: real row content — a WordPress post body, in
-// particular — routinely contains embedded tabs and newlines, which the
-// server itself already knows how to encode correctly inside JSON, so
-// there is no hand-rolled escaping to get subtly wrong here. NULL becomes
-// Go nil, everything else becomes its JSON-native representation (numbers
-// as json.Number so a large BIGINT round-trips exactly, not through
-// float64).
+// Each row is fetched as one JSON_OBJECT per output line (QueryRaw, --raw)
+// rather than through this package's usual tab-separated parsing: real row
+// content — a WordPress post body, in particular — routinely contains
+// embedded tabs and newlines, which the server already knows how to encode
+// correctly inside JSON, and a JSON string never contains a raw newline, so
+// one line is always exactly one row. The rows are deliberately not
+// aggregated into a single JSON_ARRAYAGG blob: MariaDB caps that at
+// group_concat_max_len (1 MB by default), which one page of real posts
+// easily exceeds. NULL becomes Go nil, everything else its JSON-native
+// representation (numbers as json.Number so a large BIGINT round-trips
+// exactly, not through float64).
 func (c Client) TableRows(ctx context.Context, dbName, table string, cols []ColumnInfo, page, pageSize int) (rows []map[string]any, total int64, err error) {
-	if err := ValidateIdentifier(dbName); err != nil {
-		return nil, 0, err
+	if len(cols) == 0 {
+		return nil, 0, fmt.Errorf("table %s.%s has no columns", dbName, table)
 	}
 	if page < 1 {
 		page = 1
@@ -393,13 +420,6 @@ func (c Client) TableRows(ctx context.Context, dbName, table string, cols []Colu
 	}
 	total, _ = strconv.ParseInt(strings.TrimSpace(countOut), 10, 64)
 
-	// Deliberately unqualified column names here, not "t.col": this ORDER
-	// BY sits inside the INNER (SELECT * FROM ... ORDER BY ... LIMIT ...)
-	// subquery, where the "t" alias does not exist yet — that alias only
-	// applies to the subquery's own *result*, in the outer FROM (...) t.
-	// Found live: exactly this table-alias scoping mistake produced
-	// "Unknown column 't.option_id' in 'order clause'" against a real
-	// WordPress database's wp_options table the first time this ran.
 	orderBy := ""
 	if pk := primaryKeyColumns(cols); len(pk) > 0 {
 		quoted := make([]string, len(pk))
@@ -411,22 +431,39 @@ func (c Client) TableRows(ctx context.Context, dbName, table string, cols []Colu
 
 	pairs := make([]string, len(cols))
 	for i, col := range cols {
-		pairs[i] = quoteLiteral(col.Name) + ", t." + quoteIdent(col.Name)
+		pairs[i] = quoteLiteral(col.Name) + ", " + quoteIdent(col.Name)
 	}
-	sql := fmt.Sprintf(`SELECT COALESCE(JSON_ARRAYAGG(JSON_OBJECT(%s)), JSON_ARRAY())
-FROM (SELECT * FROM %s %s LIMIT %d OFFSET %d) t;`,
+	sql := fmt.Sprintf("SELECT JSON_OBJECT(%s) FROM %s %s LIMIT %d OFFSET %d;",
 		strings.Join(pairs, ", "), qualified, orderBy, pageSize, (page-1)*pageSize)
 
 	raw, err := c.QueryRaw(ctx, sql)
 	if err != nil {
 		return nil, 0, err
 	}
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&rows); err != nil {
-		return nil, 0, fmt.Errorf("decoding row data: %w", err)
+	rows, err = decodeJSONRows(raw)
+	if err != nil {
+		return nil, 0, err
 	}
 	return rows, total, nil
+}
+
+// decodeJSONRows parses one JSON object per line.
+func decodeJSONRows(raw string) ([]map[string]any, error) {
+	rows := []map[string]any{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		dec := json.NewDecoder(strings.NewReader(line))
+		dec.UseNumber()
+		var row map[string]any
+		if err := dec.Decode(&row); err != nil {
+			return nil, fmt.Errorf("decoding row data: %w", err)
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 // UpdateRow updates one row, identified by its primary key, setting the
@@ -435,8 +472,8 @@ FROM (SELECT * FROM %s %s LIMIT %d OFFSET %d) t;`,
 // touch any column that isn't a real column of this table (defense in
 // depth: the web handler already only offers real columns to edit).
 func (c Client) UpdateRow(ctx context.Context, dbName, table string, cols []ColumnInfo, pkValues map[string]string, changes map[string]string) error {
-	if err := ValidateIdentifier(dbName); err != nil {
-		return err
+	if dbName == "" || table == "" || len(cols) == 0 {
+		return fmt.Errorf("unknown table %s.%s", dbName, table)
 	}
 	pk := primaryKeyColumns(cols)
 	if len(pk) == 0 {

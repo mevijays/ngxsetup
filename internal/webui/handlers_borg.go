@@ -59,7 +59,7 @@ func (s *Server) handleBorgStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleBorgSSHKeyGenerate(w http.ResponseWriter, r *http.Request) {
 	var data any
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -105,7 +105,7 @@ func (s *Server) handleBorgSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	var data any
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -167,7 +167,7 @@ func (s *Server) handleBorgBackup(w http.ResponseWriter, r *http.Request) {
 
 	var data any
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -264,7 +264,7 @@ func (s *Server) handleBorgDeleteArchive(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -300,7 +300,7 @@ func (s *Server) handleBorgRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}
@@ -339,7 +339,7 @@ func (s *Server) handleBorgSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	output, err := runCaptured(func() error {
-		c, err := newCtx(r.Context(), false)
+		c, err := newCtx(actionContext(r), false)
 		if err != nil {
 			return err
 		}

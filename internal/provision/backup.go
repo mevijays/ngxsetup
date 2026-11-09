@@ -184,7 +184,13 @@ func (c *Ctx) RestoreDatabase(nameOrSlug, sqlPath string, skipSafetyBackup bool)
 
 	logx.Step("restoring %s (%s) from %s", site.Domain, site.DBName, sqlPath)
 	if err := c.DBClient().Restore(c.Context, site.DBName, sqlPath); err != nil {
-		return nil, err
+		// A restore stops at the first failing statement, so whatever ran
+		// before it has already replaced part of the database.
+		if result.SafetyBackup != "" {
+			return nil, fmt.Errorf("%w\n    %s may now be only partly restored. Its contents from just before "+
+				"this attempt are in %s — restore that to put it back", err, site.DBName, result.SafetyBackup)
+		}
+		return nil, fmt.Errorf("%w\n    %s may now be only partly restored (no safety backup was taken)", err, site.DBName)
 	}
 	logx.Change("restored %s from %s", site.Domain, sqlPath)
 	return result, nil

@@ -56,6 +56,10 @@ func TestAllTemplatesRender(t *testing.T) {
 		{"system/unit-override.conf.tmpl", Unit{Unit: "nginx.service", Nofile: 65535, Restart: true}},
 		{"system/logrotate.tmpl", Logrotate{KeepDays: 14, PHPVersion: "8.3"}},
 		{"fail2ban/jail.local.tmpl", Fail2ban{Backend: "auto", IgnoreIPs: "127.0.0.1/8"}},
+		{"system/wp-cron.service.tmpl", WPCron{Domain: "example.com", User: "web-example", Root: "/var/www/example/public",
+			SiteBase: "/var/www/example", DBUnit: "mariadb.service", Interval: "5min",
+			ExecStart: "/usr/local/bin/wp cron event run --due-now --path=/var/www/example/public"}},
+		{"system/wp-cron.timer.tmpl", WPCron{Domain: "example.com", Interval: "5min"}},
 	}
 
 	for _, c := range cases {

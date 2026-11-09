@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -142,6 +143,59 @@ func (r Runner) RunStdinFile(ctx context.Context, path, name string, args ...str
 
 	logx.Debug("$ %s %s (stdin: %s)", name, strings.Join(args, " "), path)
 	return r.capture(ctx, f, name, args...)
+}
+
+// RunToFile runs a command and streams its stdout into a file, rather than
+// holding it in memory: this is how a database dump reaches disk, and a dump
+// can be far larger than the machine's RAM. Output goes to a temporary file
+// beside dest that is renamed into place only once the command has
+// succeeded, so a failed or interrupted run never leaves a truncated file
+// under the real name for someone to mistake for a good one later. Like Run,
+// it is suppressed by DryRun.
+func (r Runner) RunToFile(ctx context.Context, dest string, mode os.FileMode, name string, args ...string) error {
+	if r.DryRun {
+		logx.Change("[dry-run] would run: %s %s > %s", name, strings.Join(args, " "), dest)
+		return nil
+	}
+	logx.Debug("$ %s %s > %s", name, strings.Join(args, " "), dest)
+
+	f, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".partial-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp) // no-op once renamed
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, r.timeout())
+	defer cancel()
+	cmd := exec.CommandContext(cctx, name, args...)
+	var errBuf bytes.Buffer
+	cmd.Stdout = f
+	cmd.Stderr = &errBuf
+	cmd.Dir = r.Dir
+	cmd.Env = append(append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"), r.ExtraEnv...)
+
+	runErr := cmd.Run()
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	switch {
+	case runErr != nil && cctx.Err() == context.DeadlineExceeded:
+		return fmt.Errorf("%s timed out after %s", name, r.timeout())
+	case runErr != nil:
+		if detail := strings.TrimSpace(errBuf.String()); detail != "" {
+			return fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), runErr, indent(detail))
+		}
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), runErr)
+	case syncErr != nil:
+		return syncErr
+	case closeErr != nil:
+		return closeErr
+	}
+	return os.Rename(tmp, dest)
 }
 
 // TryRun runs a command whose failure is acceptable, logging it as a warning.
