@@ -125,6 +125,35 @@ jobs:
           echo "wp-config.php mode: $perms"
           [ "$((0$perms & 0004))" -eq 0 ] || { echo "wp-config.php is world-readable"; exit 1; }
 
+      - name: wp-cli runs as the site user, inside its sandbox
+        run: |
+          site=ci-test.example.com
+          sudo ./ngxsetup wp $site core install --url=https://$site --title=CI \
+            --admin_user=ci-admin --admin_email=ci@example.com --skip-email \
+            --admin_password=ci-test-password-1234
+          sudo ./ngxsetup wp $site core is-installed
+          # The site's own account, never root.
+          who=$(sudo ./ngxsetup wp $site eval 'echo posix_getpwuid(posix_geteuid())["name"];')
+          echo "wp-cli ran as: $who"
+          case "$who" in web-ci-test*) ;; *) echo "wp-cli did not run as the site user"; exit 1 ;; esac
+          # Other sites' directories are hidden by the sandbox (/var/www/html
+          # exists on the host from the nginx package).
+          test -d /var/www/html
+          seen=$(sudo ./ngxsetup wp $site eval 'var_dump(file_exists("/var/www/html"));')
+          echo "/var/www/html visible inside the sandbox: $seen"
+          echo "$seen" | grep -q 'bool(false)' || { echo "the sandbox exposes other sites"; exit 1; }
+          # wp-cli's exit status is passed through.
+          set +e
+          sudo ./ngxsetup wp $site eval 'exit(3);'
+          code=$?
+          set -e
+          [ "$code" = "3" ] || { echo "exit status $code, want 3"; exit 1; }
+          # The site directory is writable: installing a plugin works even
+          # though wp-config.php sets DISALLOW_FILE_MODS.
+          sudo ./ngxsetup wp $site plugin install hello-dolly --activate
+          sudo ./ngxsetup wp $site plugin list --format=json | grep -q '"hello-dolly"'
+          sudo ./ngxsetup wp $site plugin uninstall hello-dolly --deactivate
+
       - name: phpMyAdmin serves, not a 500, and is actually behind its credential
         run: |
           sudo ./ngxsetup config set phpmyadmin.allow_list 127.0.0.1/32

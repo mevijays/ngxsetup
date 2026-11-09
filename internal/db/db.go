@@ -16,6 +16,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -338,13 +339,61 @@ func (c Client) Restore(ctx context.Context, dbName, path string) error {
 		return fmt.Errorf("%s is empty", path)
 	}
 
+	if err := CheckRestorable(path); err != nil {
+		return err
+	}
+
 	args := c.baseArgs()
 	args = append(args, dbName)
 	if _, err := c.longRunner().RunStdinFile(ctx, path, c.binary(), args...); err != nil {
+		if line := clientErrorLine(err); line != "" {
+			return fmt.Errorf("restoring %s from %s failed: %s", dbName, path, line)
+		}
 		return fmt.Errorf("restoring %s from %s: %w", dbName, path, err)
 	}
 	logx.Change("restored %s from %s", dbName, path)
 	return nil
+}
+
+// CheckRestorable refuses a dump that mysqldump or mariadb-dump began but
+// never finished — its header says which tool wrote it, and that tool always
+// ends a completed dump with the "-- Dump completed" trailer. Loading such a
+// file would replace the site's tables up to the cut and leave the rest
+// missing. A file from any other source has no such contract and is not
+// judged here.
+func CheckRestorable(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	head := make([]byte, 1024)
+	n, _ := io.ReadFull(f, head)
+	f.Close()
+	h := string(head[:n])
+	if !strings.Contains(h, "-- MySQL dump") && !strings.Contains(h, "-- MariaDB dump") {
+		return nil
+	}
+	if err := CheckDumpComplete(path); err != nil {
+		return fmt.Errorf("refusing to restore: %w (the dump was cut short — the database was not touched)", err)
+	}
+	return nil
+}
+
+var clientErrorRe = regexp.MustCompile(`ERROR \d+ \([0-9A-Z]+\)( at line \d+)?: [^\n]*`)
+
+// clientErrorLine pulls the mysql client's own error line out of a failed
+// run's full stderr, shortened: it is often followed (or itself continued)
+// by the echoed text of a huge INSERT, which buries it.
+func clientErrorLine(err error) string {
+	var ce *system.CommandError
+	if !errors.As(err, &ce) {
+		return ""
+	}
+	m := clientErrorRe.FindString(ce.Stderr)
+	if len(m) > 240 {
+		m = m[:240] + "…"
+	}
+	return m
 }
 
 // Harden applies the checks that mysql_secure_installation performs, without

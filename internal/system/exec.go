@@ -123,6 +123,33 @@ func (r Runner) RunStdin(ctx context.Context, stdin, name string, args ...string
 	return r.capture(ctx, strings.NewReader(stdin), name, args...)
 }
 
+// RunStdinCombined executes a command with input piped to stdin and returns
+// stdout and stderr merged in the order they were written — for commands
+// whose whole transcript is shown to a person. Suppressed by DryRun.
+func (r Runner) RunStdinCombined(ctx context.Context, stdin, name string, args ...string) (string, error) {
+	if r.DryRun {
+		logx.Change("[dry-run] would run: %s %s", name, strings.Join(args, " "))
+		return "", nil
+	}
+	logx.Debug("$ %s %s", name, strings.Join(args, " "))
+
+	cctx, cancel := context.WithTimeout(ctx, r.timeout())
+	defer cancel()
+	cmd := exec.CommandContext(cctx, name, args...)
+	var buf bytes.Buffer
+	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	cmd.Dir = r.Dir
+	cmd.Env = append(append(os.Environ(), "DEBIAN_FRONTEND=noninteractive", "LC_ALL=C"), r.ExtraEnv...)
+
+	err := cmd.Run()
+	if err != nil && cctx.Err() == context.DeadlineExceeded {
+		return buf.String(), fmt.Errorf("%s timed out after %s", name, r.timeout())
+	}
+	return buf.String(), err
+}
+
 // RunStdinFile executes a command with a file's contents piped to stdin,
 // streaming rather than reading the file into memory first.
 //
@@ -239,8 +266,25 @@ func (r Runner) capture(ctx context.Context, stdin io.Reader, name string, args 
 	if detail == "" {
 		return out.String(), fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
 	}
-	return out.String(), fmt.Errorf("%s %s: %w\n%s", name, strings.Join(args, " "), err, indent(detail))
+	return out.String(), &CommandError{
+		msg:    fmt.Sprintf("%s %s: %v\n%s", name, strings.Join(args, " "), err, indent(detail)),
+		err:    err,
+		Stderr: errBuf.String(),
+	}
 }
+
+// CommandError is a failed command whose message shows the tail of its
+// output, while Stderr keeps all of it — for a caller that knows where in a
+// long error stream the one meaningful line is (the mysql client's "ERROR
+// ... at line N" sits before the statement text it echoes).
+type CommandError struct {
+	msg    string
+	err    error
+	Stderr string
+}
+
+func (e *CommandError) Error() string { return e.msg }
+func (e *CommandError) Unwrap() error { return e.err }
 
 func indent(s string) string {
 	lines := strings.Split(s, "\n")

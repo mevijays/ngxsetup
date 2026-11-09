@@ -83,8 +83,13 @@ opcache.validate_timestamps = {{ if .Plan.OPcache.ValidateTimestamps }}1{{ else 
 ;; diagnose.
 opcache.save_comments = 1
 opcache.enable_file_override = 1
-opcache.file_cache = {{ .OpcacheFileCache }}
-opcache.file_cache_only = 0
+
+;; No on-disk file cache (opcache.file_cache). Every site runs its own PHP-FPM
+;; as its own user in a read-only sandbox, so one shared cache directory is
+;; either unwritable — PHP 8.5 refuses to start over that — or, if it were
+;; made writable, a place where one site could plant compiled code another
+;; site would execute. The in-memory cache above is where the speed is; the
+;; file cache only warms the first requests after a restart.
 {{- if .Plan.OPcache.HugeCodePages }}
 
 ;; Backs the compiled code with huge pages, cutting TLB misses on a working set

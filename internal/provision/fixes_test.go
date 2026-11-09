@@ -149,3 +149,30 @@ func TestMigratedWPConfigKeepsTheSourcesCustomDefines(t *testing.T) {
 		t.Error("carried-over defines must come before wp-settings.php is loaded")
 	}
 }
+
+// os.Chmod ignores an octal 0o2000; the setgid bit must be os.ModeSetgid or
+// directories silently lose it, and new uploads end up unreadable to nginx.
+func TestApplyModesSetsSetgidOnDirectories(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "wp-content", "uploads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "index.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyModes(root); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{root, filepath.Join(root, "wp-content"), filepath.Join(root, "wp-content", "uploads")} {
+		info, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSetgid == 0 || info.Mode().Perm() != 0o750 {
+			t.Errorf("%s mode = %v, want setgid 0750", d, info.Mode())
+		}
+	}
+	if info, _ := os.Stat(filepath.Join(root, "index.php")); info.Mode().Perm() != 0o640 {
+		t.Errorf("index.php mode = %v, want 0640", info.Mode())
+	}
+}

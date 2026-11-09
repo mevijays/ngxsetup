@@ -53,8 +53,14 @@ var basePackages = []string{
 // bcmath, which many plugins need.
 var phpPackages = []string{
 	"php-fpm", "php-mysql", "php-xml", "php-curl", "php-gd", "php-mbstring",
-	"php-zip", "php-intl", "php-bcmath", "php-apcu", "php-opcache", "php-imagick",
+	"php-zip", "php-intl", "php-bcmath", "php-apcu", "php-imagick",
 }
+
+// phpOpcachePackage is a separate package only up to PHP 8.4. From PHP 8.5
+// (Ubuntu 26.04 and later) OPcache is compiled into PHP itself and the
+// package no longer exists — requiring it made the whole PHP install fail
+// with "has no installation candidate".
+const phpOpcachePackage = "php-opcache"
 
 // Setup brings a bare machine up to a working, tuned, hardened stack.
 func (c *Ctx) Setup(req SetupRequest) error {
@@ -214,6 +220,13 @@ func (c *Ctx) installPackages(req SetupRequest) error {
 	}
 	if err := system.AptInstall(c.Context, c.Runner, phpPackages...); err != nil {
 		return err
+	}
+	if system.PackageInstalled(c.Context, c.Runner, phpOpcachePackage) || system.PackageAvailable(c.Context, c.Runner, phpOpcachePackage) {
+		if err := system.AptInstall(c.Context, c.Runner, phpOpcachePackage); err != nil {
+			return err
+		}
+	} else {
+		logx.Skip("OPcache is built into this PHP version; no separate %s package needed", phpOpcachePackage)
 	}
 	if err := system.AptInstall(c.Context, c.Runner, "certbot", "fail2ban", "ufw", "unattended-upgrades"); err != nil {
 		return err

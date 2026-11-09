@@ -21,6 +21,8 @@ cache purge [<domain>]      drop cached responses
 ssl issue | renew           obtain or renew certificates
 config get | set | show     read and change persisted settings
 
+wp <domain> <args...>       run wp-cli as the site's user, inside its PHP sandbox
+
 security scan [<domain>]    core/plugin checksum verification, malware scan
 security patch [<domain>]   update outdated WordPress core, plugins and themes
 security install-clamav     install and configure the ClamAV daemon
@@ -79,6 +81,29 @@ sudo ngxsetup site remove example.com                          # keep files and 
 sudo ngxsetup site remove example.com --purge-files --purge-db  # remove everything
 sudo ngxsetup site fix-perms example.com
 ```
+
+## `wp`
+
+```bash
+sudo ngxsetup wp example.com plugin list
+sudo ngxsetup wp example.com plugin install query-monitor --activate
+sudo ngxsetup wp example.com core update
+sudo ngxsetup wp example.com search-replace 'http://old' 'https://new' --dry-run
+sudo ngxsetup wp example.com user update admin --prompt=user_pass   # password read from stdin
+sudo ngxsetup wp example.com shell                                  # interactive
+sudo ngxsetup wp example.com plugin list --format=json | jq .
+```
+
+Runs wp-cli as the site's own system user, in a transient systemd unit
+with the same sandbox as the site's PHP-FPM service: other sites'
+directories are hidden and the rest of the filesystem is read-only,
+while the site's own directory is writable so plugins, themes and core
+can be installed and updated (wp-admin cannot — the generated
+`wp-config.php` sets `DISALLOW_FILE_MODS`). Everything after the domain
+is passed to wp-cli unchanged, and wp-cli's exit status becomes the
+command's, so it scripts exactly like `wp`. A terminal gets a real
+pseudo-terminal (`wp shell`, `wp db cli`); a pipe gets plain stdin and
+stdout.
 
 ## `cache`
 

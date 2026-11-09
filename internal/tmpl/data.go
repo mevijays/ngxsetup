@@ -89,9 +89,8 @@ type Pool struct {
 type PHPIni struct {
 	Plan tuning.Plan
 
-	SAPI             string // "fpm" or "cli"
-	Timezone         string
-	OpcacheFileCache string
+	SAPI     string // "fpm" or "cli"
+	Timezone string
 }
 
 // DB is the context for the database drop-in.

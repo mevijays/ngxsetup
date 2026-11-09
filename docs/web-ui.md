@@ -69,6 +69,14 @@ snapshot of the last N lines or a live, polling tail — without ever
 reading more than a bounded window of a file no matter how large it has
 grown.
 
+**A WordPress site's WordPress page** (from the Sites page) shows the
+core version and available updates, and lists plugins, themes and users
+with one-click activate, deactivate, update, delete and password reset,
+plus a plugin installer, search-and-replace, cache and rewrite flushes
+and a box for any other wp-cli command. All of it runs through the same
+sandboxed wp-cli as `ngxsetup wp`. A reset password is generated on the
+server, passed to wp-cli on stdin, and shown once.
+
 **A site's Activity view** (from the Sites page) shows currently-active
 PHP workers, request rate, distinct visitor IPs and a geography
 breakdown — the last one only if `config set geoip_database_path

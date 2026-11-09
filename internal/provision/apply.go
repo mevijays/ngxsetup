@@ -127,7 +127,7 @@ func (c *Ctx) ApplyPHP() error {
 	if c.PHPVersion == "" {
 		return fmt.Errorf("PHP is not installed; run `ngxsetup setup` first")
 	}
-	for _, d := range []string{PHPLogDir, OpcacheDir} {
+	for _, d := range []string{PHPLogDir} {
 		if err := c.Writer.EnsureDir(d, 0o755, "www-data"); err != nil {
 			return err
 		}
@@ -135,10 +135,9 @@ func (c *Ctx) ApplyPHP() error {
 
 	for _, sapi := range []string{"fpm", "cli"} {
 		body, err := tmpl.Render("php/php.ini.tmpl", tmpl.PHPIni{
-			Plan:             c.Plan,
-			SAPI:             sapi,
-			Timezone:         c.timezone(),
-			OpcacheFileCache: OpcacheDir,
+			Plan:     c.Plan,
+			SAPI:     sapi,
+			Timezone: c.timezone(),
 		})
 		if err != nil {
 			return err

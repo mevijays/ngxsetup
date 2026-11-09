@@ -341,7 +341,7 @@ func (c *Ctx) createSiteAccount(rec state.Site) error {
 		owner string
 	}{
 		{base, 0o750, rec.User + ":www-data"},
-		{rec.Root, 0o2750, rec.User + ":www-data"},
+		{rec.Root, siteDirMode, rec.User + ":www-data"},
 		// Not under the document root, so a path-traversal bug cannot reach
 		// session files and a misconfiguration cannot serve them.
 		{c.siteTmpDir(rec.Slug), 0o700, rec.User},
@@ -479,6 +479,15 @@ func (c *Ctx) installWordPress(rec state.Site, dbPassword, prefixSuffix string, 
 
 	if err := c.chownRecursive(rec.Root, rec.User+":www-data"); err != nil {
 		return err
+	}
+	// The tarball's own modes (0755/0644, no setgid) would leave the tree
+	// world-readable and new files outside the www-data group; apply the
+	// same modes `site fix-perms` maintains, before WordPress creates
+	// anything (uploads) of its own.
+	if c.Writer.Root == "" {
+		if err := applyModes(c.Path(rec.Root)); err != nil {
+			return err
+		}
 	}
 	if err := os.Chmod(c.Path(wpConfig), 0o640); err != nil {
 		return err
@@ -626,6 +635,11 @@ func (c *Ctx) RemoveSite(nameOrSlug string, purgeFiles, purgeDB bool) error {
 	}
 
 	if purgeFiles {
+		// The operator's own nginx overrides for this site go with its files;
+		// without --purge-files they are kept for a later re-add.
+		if err := c.Writer.Remove(filepath.Join(SitesAvailable, rec.Slug+".custom.conf")); err != nil {
+			logx.Warn("could not remove the site's custom nginx overrides: %v", err)
+		}
 		if !c.Writer.DryRun {
 			if err := os.RemoveAll(c.Path(c.SiteRoot(rec.Slug))); err != nil {
 				logx.Warn("could not remove %s: %v", c.SiteRoot(rec.Slug), err)
@@ -753,6 +767,13 @@ func (c *Ctx) FixPermissions(slugs []string) error {
 	return nil
 }
 
+// siteDirMode is 2750: the setgid bit is what makes files WordPress creates
+// later (uploads, plugins) inherit the www-data group nginx reads them by.
+// It has to be spelled os.ModeSetgid — Go's os.Chmod ignores an octal 0o2000
+// bit entirely, so the 0o2750 this used to say silently set plain 0750, and
+// a new upload then came out unreadable to nginx after `site fix-perms`.
+const siteDirMode = 0o750 | os.ModeSetgid
+
 // applyModes sets directories to 2750 and files to 0640 across a site tree.
 // The setgid bit on directories is what keeps newly uploaded media readable by
 // nginx without making it readable by every other site.
@@ -765,7 +786,7 @@ func applyModes(root string) error {
 			return nil
 		}
 		if d.IsDir() {
-			return os.Chmod(p, 0o2750)
+			return os.Chmod(p, siteDirMode)
 		}
 		return os.Chmod(p, 0o640)
 	})

@@ -139,3 +139,26 @@ func TestCheckDumpComplete(t *testing.T) {
 		t.Error("a truncated dump was accepted")
 	}
 }
+
+func TestCheckRestorableRefusesTruncatedToolDumps(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	truncated := write("cut.sql", "-- MariaDB dump 10.19\nCREATE TABLE t (id int);\nINSERT INTO t VALUES (1")
+	complete := write("ok.sql", "-- MySQL dump 10.13\nCREATE TABLE t (id int);\n-- Dump completed on 2026-11-09\n")
+	foreign := write("hand.sql", "CREATE TABLE t (id int);\nINSERT INTO t VALUES (1);\n")
+	if err := CheckRestorable(truncated); err == nil {
+		t.Error("a mariadb-dump file without its trailer was accepted")
+	}
+	if err := CheckRestorable(complete); err != nil {
+		t.Errorf("a complete dump was refused: %v", err)
+	}
+	if err := CheckRestorable(foreign); err != nil {
+		t.Errorf("a hand-written SQL file was refused: %v", err)
+	}
+}

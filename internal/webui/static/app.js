@@ -484,6 +484,7 @@ function renderSitesTable(tbody, sites) {
       <td>${escapeHTML(s.cert_source || '-')}</td>
       <td class="font-mono text-xs">${escapeHTML(s.db_name || '-')}</td>
       <td class="text-right whitespace-nowrap">
+        ${s.wordpress ? `<button class="btn btn-sm" data-act="wordpress">${icon('fa-plug')}WordPress</button>` : ''}
         <button class="btn btn-sm" data-act="detail">${icon('fa-chart-simple')}Activity</button>
         <button class="btn btn-sm" data-act="toggle">${s.enabled ? 'Disable' : 'Enable'}</button>
         <button class="btn btn-sm" data-act="fixperms">Fix perms</button>
@@ -497,6 +498,8 @@ function renderSitesTable(tbody, sites) {
       const act = btn.dataset.act;
       if (act === 'detail') {
         switchView('siteDetail', domain);
+      } else if (act === 'wordpress') {
+        switchView('siteWP', domain);
       } else if (act === 'toggle') {
         const enabling = btn.textContent.trim() === 'Enable';
         btn.disabled = true;
@@ -532,6 +535,248 @@ function renderSitesTable(tbody, sites) {
     });
   });
 }
+
+// ---- WordPress (wp-cli) for one site -------------------------------------------
+
+// splitArgs turns a typed command line into an argument list the way a shell
+// would split it (quotes and backslashes), without any shell ever being
+// involved: the server receives and runs the list as-is.
+function splitArgs(str) {
+  const out = [];
+  let cur = '', quote = null, started = false;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else if (ch === '\\' && quote === '"' && i + 1 < str.length) cur += str[++i];
+      else cur += ch;
+    } else if (ch === "'" || ch === '"') { quote = ch; started = true; }
+    else if (/\s/.test(ch)) { if (started || cur) { out.push(cur); cur = ''; started = false; } }
+    else if (ch === '\\' && i + 1 < str.length) { cur += str[++i]; started = true; }
+    else { cur += ch; started = true; }
+  }
+  if (quote) throw new Error('unclosed quote');
+  if (started || cur) out.push(cur);
+  return out;
+}
+
+views.siteWP = (container, domain) => {
+  if (!domain) { switchView('sites'); return; }
+  const base = `/api/sites/${encodeURIComponent(domain)}/wp`;
+  container.innerHTML = `
+    <button id="back-btn" class="text-sm text-indigo-600 hover:underline mb-3">${icon('fa-arrow-left')} Back to Sites</button>
+    <h2 class="page-title">${icon('fa-plug', 'text-indigo-500')}${escapeHTML(domain)} — WordPress</h2>
+    <p class="text-xs text-slate-500 mb-4">Everything here runs wp-cli as this site's own system user, inside the same sandbox as its PHP — the same as <code class="chip">ngxsetup wp ${escapeHTML(domain)} …</code> on the command line.</p>
+    <div class="card">
+      <h3 class="card-title">${icon('fa-terminal')}Run a wp-cli command</h3>
+      <form id="wp-cmd-form" class="flex gap-2 items-center">
+        <span class="font-mono text-sm text-slate-500">wp</span>
+        <input id="wp-cmd" type="text" class="field-input flex-1 font-mono" autocomplete="off" spellcheck="false" placeholder="plugin list --status=active">
+        <button type="submit" class="btn btn-primary">Run</button>
+      </form>
+      <div id="wp-out-wrap" class="output-wrap hidden mt-3"><div id="wp-out" class="output-panel"></div></div>
+    </div>
+    <div id="wp-body"><p class="text-slate-400 text-sm">Loading WordPress details (this boots WordPress a few times)…</p></div>`;
+  container.querySelector('#back-btn').addEventListener('click', () => switchView('sites'));
+
+  const outWrap = container.querySelector('#wp-out-wrap');
+  const out = container.querySelector('#wp-out');
+  const body = container.querySelector('#wp-body');
+
+  // run sends one wp-cli argument list, shows its transcript, and refreshes
+  // the overview afterwards when the command could have changed it.
+  async function run(args, { refresh = true, label } = {}) {
+    outWrap.classList.remove('hidden');
+    out.classList.remove('err');
+    out.textContent = `$ wp ${args.join(' ')}\n…`;
+    try {
+      const res = await api('POST', `${base}/run`, { args });
+      out.textContent = `$ wp ${args.join(' ')}\n` + ((res && res.output) || '(no output)');
+      toast((label || 'wp ' + args[0]) + ' finished', 'ok');
+      if (refresh) await load();
+    } catch (err) {
+      out.classList.add('err');
+      out.textContent = `$ wp ${args.join(' ')}\n` + ((err.data && err.data.output) || '') + '\nError: ' + err.message;
+      toast((label || 'wp ' + args[0]) + ' failed', 'err');
+    }
+  }
+
+  container.querySelector('#wp-cmd-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = container.querySelector('#wp-cmd');
+    let args;
+    try { args = splitArgs(input.value.trim()); } catch (err) { toast(err.message, 'err'); return; }
+    if (args[0] === 'wp') args = args.slice(1);
+    if (args.length === 0) return;
+    await run(args, { refresh: true });
+  });
+
+  const badge = (status) => {
+    const cls = status === 'active' || status === 'parent' ? 'badge-ok'
+      : status === 'must-use' || status === 'dropin' ? 'badge-warn' : 'badge-off';
+    return `<span class="badge ${cls}">${escapeHTML(status)}</span>`;
+  };
+
+  function itemRows(items, kind) {
+    if (items.length === 0) return `<tr><td colspan="4" class="text-slate-400">None installed.</td></tr>`;
+    return items.map((it) => {
+      const fixed = it.status === 'must-use' || it.status === 'dropin';
+      const hasUpdate = it.update === 'available';
+      const toggle = kind === 'plugin'
+        ? (it.status === 'active' ? 'deactivate' : 'activate')
+        : (it.status === 'inactive' ? 'activate' : '');
+      return `<tr data-name="${escapeHTML(it.name)}">
+        <td><div class="font-medium text-slate-900">${escapeHTML(it.title || it.name)}</div><div class="font-mono text-xs text-slate-500">${escapeHTML(it.name)}</div></td>
+        <td>${badge(it.status)}</td>
+        <td class="font-mono text-xs">${escapeHTML(it.version || '')}${hasUpdate ? ` <span class="badge badge-warn">→ ${escapeHTML(it.update_version || 'update')}</span>` : ''}</td>
+        <td class="text-right whitespace-nowrap">${fixed ? '' : `
+          ${toggle ? `<button class="btn btn-sm" data-wp="${kind} ${toggle}">${toggle === 'activate' ? 'Activate' : 'Deactivate'}</button>` : ''}
+          ${hasUpdate ? `<button class="btn btn-sm btn-primary" data-wp="${kind} update">Update</button>` : ''}
+          ${it.status === 'active' ? '' : `<button class="btn btn-sm btn-danger" data-wp="${kind} delete" data-confirm="1">Delete</button>`}`}
+        </td></tr>`;
+    }).join('');
+  }
+
+  async function load() {
+    let ov;
+    try {
+      ov = await api('GET', base);
+    } catch (err) {
+      body.innerHTML = `<div class="card"><p class="text-rose-600 text-sm">${escapeHTML(err.message)}</p></div>`;
+      return;
+    }
+    if (!ov.installed) {
+      body.innerHTML = `<div class="card"><p class="text-sm text-slate-600">WordPress's installer has not been run for this site yet. Finish it at <a class="text-indigo-600 hover:underline" href="https://${escapeHTML(domain)}/wp-admin/install.php" target="_blank" rel="noopener">${escapeHTML(domain)}/wp-admin/install.php</a>, or run <code class="chip">core install</code> above.</p></div>`;
+      return;
+    }
+    const coreUpdate = ov.core_updates.length > 0 ? ov.core_updates[0] : null;
+    const pluginUpdates = ov.plugins.filter((p) => p.update === 'available').length;
+    const themeUpdates = ov.themes.filter((t) => t.update === 'available').length;
+    body.innerHTML = `
+      ${(ov.errors || []).length ? `<div class="card"><p class="text-amber-600 text-sm">${ov.errors.map(escapeHTML).join('<br>')}</p></div>` : ''}
+      <div class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="card-title mb-0">${icon('fa-code')}WordPress ${escapeHTML(ov.version || '')}
+            ${coreUpdate ? `<span class="badge badge-warn">${escapeHTML(coreUpdate.version)} available</span>` : '<span class="badge badge-ok">up to date</span>'}</h3>
+          <div class="flex gap-2 flex-wrap">
+            ${coreUpdate ? `<button class="btn btn-sm btn-primary" data-args='["core","update"]' data-confirm="1">Update core</button>` : ''}
+            <button class="btn btn-sm" data-args='["core","verify-checksums"]' data-norefresh="1">Verify checksums</button>
+          </div>
+        </div>
+        <div class="flex gap-2 flex-wrap">
+          <button class="btn btn-sm" data-args='["cache","flush"]' data-norefresh="1">${icon('fa-arrows-rotate')}Flush object cache</button>
+          <button class="btn btn-sm" data-args='["rewrite","flush"]' data-norefresh="1">Flush rewrite rules</button>
+          <button class="btn btn-sm" data-args='["cron","event","run","--due-now"]' data-norefresh="1">Run due cron events</button>
+          <button class="btn btn-sm" id="wp-search-replace">${icon('fa-screwdriver-wrench')}Search &amp; replace…</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="card-title mb-0">${icon('fa-plug')}Plugins (${ov.plugins.length})</h3>
+          <div class="flex gap-2 flex-wrap">
+            ${pluginUpdates ? `<button class="btn btn-sm btn-primary" data-args='["plugin","update","--all"]' data-confirm="1">Update all (${pluginUpdates})</button>` : ''}
+          </div>
+        </div>
+        <form id="wp-plugin-install" class="flex gap-2 items-center mb-3">
+          <input id="wp-plugin-slug" type="text" class="field-input flex-1 font-mono" placeholder="plugin slug from wordpress.org, or a .zip URL" autocomplete="off">
+          <label class="field-checkbox-row"><input type="checkbox" id="wp-plugin-activate" checked> Activate</label>
+          <button type="submit" class="btn btn-sm btn-primary">Install</button>
+        </form>
+        <div class="overflow-x-auto"><table class="data-table"><tbody>${itemRows(ov.plugins, 'plugin')}</tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="card-title mb-0">${icon('fa-palette')}Themes (${ov.themes.length})</h3>
+          ${themeUpdates ? `<button class="btn btn-sm btn-primary" data-args='["theme","update","--all"]' data-confirm="1">Update all (${themeUpdates})</button>` : ''}
+        </div>
+        <div class="overflow-x-auto"><table class="data-table"><tbody>${itemRows(ov.themes, 'theme')}</tbody></table></div>
+      </div>
+      <div class="card">
+        <h3 class="card-title">${icon('fa-users')}Users (${ov.users.length})</h3>
+        <div class="overflow-x-auto"><table class="data-table"><tbody>
+          ${ov.users.length === 0 ? '<tr><td class="text-slate-400">No users.</td></tr>' : ov.users.map((u) => `
+            <tr data-user="${escapeHTML(u.user_login)}">
+              <td class="font-medium text-slate-900">${escapeHTML(u.user_login)}</td>
+              <td class="text-sm">${escapeHTML(u.user_email || '')}</td>
+              <td class="text-xs text-slate-500">${escapeHTML(u.roles || '')}</td>
+              <td class="text-right whitespace-nowrap"><button class="btn btn-sm" data-reset="1">${icon('fa-key')}Reset password</button></td>
+            </tr>`).join('')}
+        </tbody></table></div>
+      </div>`;
+
+    // Buttons carrying a fixed argument list.
+    body.querySelectorAll('button[data-args]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const args = JSON.parse(btn.dataset.args);
+        if (btn.dataset.confirm) {
+          const ok = await confirmModal({ title: `Run wp ${args.join(' ')}?`, body: `<p>This changes ${escapeHTML(domain)}. Consider a backup first.</p>`, confirmLabel: 'Run' });
+          if (!ok) return;
+        }
+        btn.disabled = true;
+        await run(args, { refresh: !btn.dataset.norefresh });
+        btn.disabled = false;
+      });
+    });
+
+    // Per-plugin / per-theme actions.
+    body.querySelectorAll('button[data-wp]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const [kind, action] = btn.dataset.wp.split(' ');
+        const name = btn.closest('tr').dataset.name;
+        if (btn.dataset.confirm) {
+          const ok = await confirmModal({ title: `Delete ${kind} ${name}?`, body: `<p>The ${kind}'s files are removed from ${escapeHTML(domain)}.</p>`, confirmLabel: 'Delete', danger: true });
+          if (!ok) return;
+        }
+        btn.disabled = true;
+        await run([kind, action, name]);
+      });
+    });
+
+    body.querySelector('#wp-plugin-install').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const slug = body.querySelector('#wp-plugin-slug').value.trim();
+      if (!slug) return;
+      const args = ['plugin', 'install', slug];
+      if (body.querySelector('#wp-plugin-activate').checked) args.push('--activate');
+      await run(args, { label: 'Plugin install' });
+    });
+
+    body.querySelector('#wp-search-replace').addEventListener('click', async () => {
+      const res = await confirmModal({
+        title: 'Search & replace in the database',
+        body: `<p class="mb-3">Serialized data is handled correctly. Leave "dry run" on first to see what would change.</p>
+          <label class="field-label">Search for<input type="text" id="sr-from" class="field-input mt-1 font-mono" placeholder="http://old.example.com"></label>
+          <label class="field-label mt-2">Replace with<input type="text" id="sr-to" class="field-input mt-1 font-mono" placeholder="https://new.example.com"></label>
+          <label class="field-checkbox-row mt-2"><input type="checkbox" id="sr-dry" checked> Dry run (report only)</label>`,
+        confirmLabel: 'Run',
+      });
+      if (!res || !res.values['sr-from']) return;
+      const args = ['search-replace', res.values['sr-from'], res.values['sr-to'] || '', '--all-tables-with-prefix', '--precise', '--report-changed-only'];
+      if (res.values['sr-dry']) args.push('--dry-run');
+      await run(args, { refresh: false, label: 'Search & replace' });
+    });
+
+    body.querySelectorAll('button[data-reset]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const user = btn.closest('tr').dataset.user;
+        const ok = await confirmModal({ title: `Reset ${user}'s password?`, body: '<p>A new random password is set immediately and shown once. Existing sessions stay logged in until they expire.</p>', confirmLabel: 'Reset', danger: true });
+        if (!ok) return;
+        btn.disabled = true;
+        try {
+          const res = await api('POST', `${base}/reset-password`, { user });
+          await confirmModal({
+            title: `New password for ${user}`,
+            body: `<p class="mb-2">Copy it now — it is not stored anywhere and will not be shown again.</p><code class="chip font-mono">${escapeHTML(res.data.password)}</code>`,
+            confirmLabel: 'Done',
+          });
+        } catch (err) { toast(err.message, 'err'); }
+        btn.disabled = false;
+      });
+    });
+  }
+
+  load();
+};
 
 // ---- Site migration ---------------------------------------------------------
 

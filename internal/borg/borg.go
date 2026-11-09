@@ -407,24 +407,37 @@ type Retention struct {
 
 func (r Retention) empty() bool { return r.KeepDaily == 0 && r.KeepWeekly == 0 && r.KeepMonthly == 0 }
 
-func (c Client) Prune(ctx context.Context, ret Retention) error {
+func (c Client) Prune(ctx context.Context, ret Retention, globs ...string) error {
 	if ret.empty() {
 		return nil // nothing configured to prune by; leave every archive alone
 	}
-	args := []string{"prune", "--stats"}
-	if ret.KeepDaily > 0 {
-		args = append(args, fmt.Sprintf("--keep-daily=%d", ret.KeepDaily))
+	// Without a glob the policy covers every archive in the repository at
+	// once — and this repository holds every site's archives, so "keep the
+	// last archive of each day" would keep one site's and delete the others'.
+	// A caller with more than one kind of archive passes one glob per kind
+	// and each is pruned on its own.
+	if len(globs) == 0 {
+		globs = []string{""}
 	}
-	if ret.KeepWeekly > 0 {
-		args = append(args, fmt.Sprintf("--keep-weekly=%d", ret.KeepWeekly))
-	}
-	if ret.KeepMonthly > 0 {
-		args = append(args, fmt.Sprintf("--keep-monthly=%d", ret.KeepMonthly))
-	}
-	args = append(args, c.Repo)
-	out, err := c.runner().CombinedOutput(ctx, "borg", args...)
-	if err != nil {
-		return fmt.Errorf("pruning %s: %w\n%s", c.Repo, err, out)
+	for _, glob := range globs {
+		args := []string{"prune", "--stats"}
+		if ret.KeepDaily > 0 {
+			args = append(args, fmt.Sprintf("--keep-daily=%d", ret.KeepDaily))
+		}
+		if ret.KeepWeekly > 0 {
+			args = append(args, fmt.Sprintf("--keep-weekly=%d", ret.KeepWeekly))
+		}
+		if ret.KeepMonthly > 0 {
+			args = append(args, fmt.Sprintf("--keep-monthly=%d", ret.KeepMonthly))
+		}
+		if glob != "" {
+			args = append(args, "--glob-archives", glob)
+		}
+		args = append(args, c.Repo)
+		out, err := c.runner().CombinedOutput(ctx, "borg", args...)
+		if err != nil {
+			return fmt.Errorf("pruning %s: %w\n%s", c.Repo, err, out)
+		}
 	}
 	logx.Change("pruned old archives in %s", c.Repo)
 	c.compactOrWarn(ctx)

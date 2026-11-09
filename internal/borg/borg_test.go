@@ -337,3 +337,38 @@ func TestDirOf(t *testing.T) {
 		}
 	}
 }
+
+// Archives of every site share one repository; pruning must apply the
+// retention policy to each site separately, or keep-daily keeps only the
+// last site backed up each day and deletes every other site's archives.
+func TestPruneAppliesRetentionPerGlob(t *testing.T) {
+	requireBorg(t)
+	c := newTestClient(t)
+	ctx := context.Background()
+	if err := c.Init(ctx, "repokey-blake2"); err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha-20260101-000000", "beta-20260101-000001", "alpha-20260101-000002", "beta-20260101-000003"} {
+		if err := c.CreateArchive(ctx, name, "none", []string{src}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Prune(ctx, Retention{KeepDaily: 1}, "alpha-????????-??????", "beta-????????-??????"); err != nil {
+		t.Fatal(err)
+	}
+	archives, err := c.ListArchives(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, a := range archives {
+		got[a.Name] = true
+	}
+	if !got["alpha-20260101-000002"] || !got["beta-20260101-000003"] || len(got) != 2 {
+		t.Errorf("after per-site prune: %v, want the newest archive of each site", got)
+	}
+}

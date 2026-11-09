@@ -122,6 +122,8 @@ func Run(args []string) int {
 		err = cmdBorg(ctx, rest)
 	case "migrate":
 		err = cmdMigrate(ctx, rest)
+	case "wp":
+		err = cmdWP(ctx, rest)
 	case "uninstall":
 		err = cmdUninstall(ctx, rest)
 	case "version", "--version", "-v":
@@ -142,6 +144,11 @@ func Run(args []string) int {
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 2
+		}
+		// wp-cli already printed its own error; pass its exit status on.
+		var code exitCodeError
+		if errors.As(err, &code) {
+			return int(code)
 		}
 		logx.Error("%v", err)
 		return 1
@@ -223,6 +230,11 @@ SITES  ('vhost' works identically to 'site' throughout — use whichever reads b
   site remove <domain>     remove a site
   site enable|disable      take a site in or out of service
   site fix-perms           restore correct ownership and modes
+
+WORDPRESS
+  wp <domain> <wp-cli args...>
+                            run wp-cli as the site's own user, inside its
+                            PHP sandbox (e.g. wp example.com plugin list)
 
 MIGRATION
   migrate discover --host <h> --user <u> --key <path>

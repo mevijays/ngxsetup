@@ -38,9 +38,11 @@ define( 'DISALLOW_FILE_EDIT', true );
 /**
  * WordPress writes to its own directories to install updates. That means the
  * web server can rewrite the code it executes, which is how a single upload
- * bug becomes a persistent backdoor. Updates are applied with wp-cli instead:
+ * bug becomes a persistent backdoor. Updates are applied with wp-cli instead,
+ * run as this site's own user inside its sandbox:
  *
- *     ngxsetup site update {{ .Domain }}
+ *     ngxsetup wp {{ .Domain }} plugin install <slug> --activate
+ *     ngxsetup security patch {{ .Domain }}    (core, plugins and themes)
  */
 define( 'DISALLOW_FILE_MODS', {{ if .AllowFileMods }}false{{ else }}true{{ end }} );
 

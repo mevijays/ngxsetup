@@ -105,6 +105,8 @@ func (c *Ctx) PlanUninstall(opts UninstallOptions) UninstallPlan {
 		FPMUnitTemplate,
 		"/etc/tmpfiles.d/ngxsetup.conf",
 		CertbotReloadHook,
+		OpcacheDir,
+		ACMERoot,
 		"/usr/local/bin/ngxsetup", "/usr/local/bin/vhostsetup", "/usr/local/bin/fixperm",
 		"/usr/local/bin/mysqltune", "/usr/local/bin/loadcheck",
 		ConfigDir, StateDir,
@@ -132,6 +134,7 @@ func (c *Ctx) PlanUninstall(opts UninstallOptions) UninstallPlan {
 	if opts.PurgePackages {
 		plan.PackagesRemoved = append([]string{}, basePackages...)
 		plan.PackagesRemoved = append(plan.PackagesRemoved, phpPackages...)
+		plan.PackagesRemoved = append(plan.PackagesRemoved, phpOpcachePackage) // skipped by AptRemove when absent
 		plan.PackagesRemoved = append(plan.PackagesRemoved,
 			"nginx", "mariadb-server", "mysql-server",
 			"certbot", "fail2ban", "ufw", "unattended-upgrades")
@@ -218,6 +221,14 @@ func (c *Ctx) Uninstall(opts UninstallOptions) error {
 		for _, f := range plan.RestoredFiles {
 			if err := c.restorePackagedFile(f); err != nil {
 				logx.Warn("restoring %s: %v", f.LivePath, err)
+			}
+		}
+		// Setup unlinked the distribution's default site (it competes for
+		// default_server); with ngxsetup's own sites gone, nginx would
+		// otherwise be left listening on nothing at all.
+		if _, err := os.Stat(c.Path(filepath.Join(SitesAvailable, "default"))); err == nil {
+			if err := c.Writer.Symlink(filepath.Join(SitesAvailable, "default"), filepath.Join(SitesEnabled, "default")); err != nil {
+				logx.Warn("re-enabling nginx's default site: %v", err)
 			}
 		}
 		if !c.Writer.DryRun {

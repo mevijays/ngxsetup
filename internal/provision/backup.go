@@ -160,6 +160,11 @@ func (c *Ctx) RestoreDatabase(nameOrSlug, sqlPath string, skipSafetyBackup bool)
 	if _, err := os.Stat(sqlPath); err != nil {
 		return nil, fmt.Errorf("reading %s: %w", sqlPath, err)
 	}
+	// Before the safety backup and before touching the database: a
+	// truncated dump must be refused while the site is still intact.
+	if err := db.CheckRestorable(sqlPath); err != nil {
+		return nil, err
+	}
 
 	if !c.Writer.DryRun {
 		if err := c.EnsureSiteDatabase(*site); err != nil {

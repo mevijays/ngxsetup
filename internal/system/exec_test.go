@@ -2,8 +2,10 @@ package system
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,5 +79,19 @@ func TestRunToFileLeavesNothingOnFailure(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 0 {
 		t.Errorf("files left behind after a failure: %v", entries)
+	}
+}
+
+// The full stderr survives on the error for callers that need a line the
+// tail-only message would cut.
+func TestCommandErrorKeepsFullStderr(t *testing.T) {
+	_, err := (Runner{}).RunStdin(context.Background(), "", "sh", "-c",
+		"echo 'ERROR 1064 (42000) at line 52: bad' >&2; for i in $(seq 1 40); do echo filler $i >&2; done; exit 1")
+	var ce *CommandError
+	if !errors.As(err, &ce) {
+		t.Fatalf("error %T is not a *CommandError", err)
+	}
+	if !strings.Contains(ce.Stderr, "ERROR 1064") {
+		t.Error("full stderr lost the first line")
 	}
 }

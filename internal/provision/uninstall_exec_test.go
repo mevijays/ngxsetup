@@ -148,3 +148,23 @@ func TestUninstallSnapshotPreservesState(t *testing.T) {
 		t.Errorf("no snapshot directory found under %v", entries)
 	}
 }
+
+// Setup unlinks nginx's packaged default site; once ngxsetup's own sites are
+// gone, uninstall must link it back or nginx is left serving nothing.
+func TestUninstallReEnablesNginxDefaultSite(t *testing.T) {
+	c := testCtx(t)
+	avail := c.Path(filepath.Join(SitesAvailable, "default"))
+	if err := os.MkdirAll(filepath.Dir(avail), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(avail, []byte("server { listen 80 default_server; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Uninstall(UninstallOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	link, err := os.Readlink(c.Path(filepath.Join(SitesEnabled, "default")))
+	if err != nil || link != avail {
+		t.Errorf("sites-enabled/default -> %q (%v), want a link to %s", link, err, avail)
+	}
+}

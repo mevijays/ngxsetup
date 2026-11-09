@@ -349,8 +349,22 @@ func (c *Ctx) BorgPrune() error {
 		KeepWeekly:  c.Config.Borg.KeepWeekly,
 		KeepMonthly: c.Config.Borg.KeepMonthly,
 	}
-	return c.borgClient().Prune(c.Context, ret)
+	// One policy per site: archives are named <slug>-YYYYMMDD-HHMMSS, and
+	// the glob pins the timestamp's exact shape so one site's glob cannot
+	// also match a site whose slug merely starts the same way.
+	var globs []string
+	for _, site := range c.State.Sites {
+		globs = append(globs, borgArchiveGlob(site.Slug))
+	}
+	if len(globs) == 0 {
+		logx.Info("no sites registered; nothing to prune")
+		return nil
+	}
+	return c.borgClient().Prune(c.Context, ret, globs...)
 }
+
+// borgArchiveGlob matches exactly one site's archives.
+func borgArchiveGlob(slug string) string { return slug + "-????????-??????" }
 
 // BorgInstallSchedule writes and enables a systemd timer that runs
 // `ngxsetup borg backup` on the given schedule — the "one click" cron

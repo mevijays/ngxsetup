@@ -68,6 +68,9 @@ func AptInstall(ctx context.Context, r Runner, pkgs ...string) error {
 	if err := r.Run(ctx, "apt-get", args...); err != nil {
 		return fmt.Errorf("installing %s: %w", strings.Join(missing, " "), err)
 	}
+	if r.DryRun {
+		return nil // Run already reported what it would do
+	}
 	logx.Change("installed %s", strings.Join(missing, " "))
 	return nil
 }
@@ -109,6 +112,9 @@ func AptRemove(ctx context.Context, r Runner, pkgs ...string) error {
 	args = append(args, present...)
 	if err := r.Run(ctx, "apt-get", args...); err != nil {
 		return err
+	}
+	if r.DryRun {
+		return nil
 	}
 	logx.Change("removed %s", strings.Join(present, " "))
 	return nil

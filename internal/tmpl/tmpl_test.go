@@ -49,7 +49,7 @@ func TestAllTemplatesRender(t *testing.T) {
 			Root: "/var/www/ngxsetup-tools",
 		}},
 		{"php/pool.conf.tmpl", samplePool(plan)},
-		{"php/php.ini.tmpl", PHPIni{Plan: plan, SAPI: "fpm", Timezone: "UTC", OpcacheFileCache: "/var/cache/php/opcache"}},
+		{"php/php.ini.tmpl", PHPIni{Plan: plan, SAPI: "fpm", Timezone: "UTC"}},
 		{"db/server.cnf.tmpl", DB{Plan: plan}},
 		{"system/sysctl.conf.tmpl", System{Plan: plan}},
 		{"system/limits.conf.tmpl", System{Plan: plan}},
@@ -475,4 +475,21 @@ func braceBalance(s string) int {
 		depth += strings.Count(line, "{") - strings.Count(line, "}")
 	}
 	return depth
+}
+
+// One shared opcache.file_cache across sites that each run PHP as their own
+// user is either unwritable (PHP 8.5 then refuses to start) or a way for one
+// site to plant compiled code in another; it must not come back.
+func TestPHPIniHasNoSharedOpcacheFileCache(t *testing.T) {
+	for _, sapi := range []string{"fpm", "cli"} {
+		out, err := Render("php/php.ini.tmpl", PHPIni{Plan: samplePlan(), SAPI: sapi, Timezone: "UTC"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "opcache.file_cache") {
+				t.Errorf("%s php.ini sets %q", sapi, line)
+			}
+		}
+	}
 }

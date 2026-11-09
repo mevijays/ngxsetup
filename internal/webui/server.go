@@ -224,6 +224,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/sites/{domain}/enable", mut(s.handleSiteEnable(true)))
 	mux.HandleFunc("POST /api/sites/{domain}/disable", mut(s.handleSiteEnable(false)))
 	mux.HandleFunc("POST /api/sites/{domain}/fix-perms", mut(s.handleSiteFixPerms))
+	mux.HandleFunc("GET /api/sites/{domain}/wp", s.handleWPOverview)
+	mux.HandleFunc("POST /api/sites/{domain}/wp/run", mut(s.handleWPRun))
+	mux.HandleFunc("POST /api/sites/{domain}/wp/reset-password", mut(s.handleWPResetPassword))
 
 	mux.HandleFunc("POST /api/security/scan", mut(s.handleSecurityScan))
 	mux.HandleFunc("GET /api/security/patch-plan", s.handleSecurityPatchPlan)

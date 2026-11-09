@@ -31,6 +31,8 @@ const (
 	WebRoot    = "/var/www"
 	ACMERoot   = "/var/www/_acme"
 	CacheDir   = "/var/cache/nginx/fastcgi"
+	// OpcacheDir held a shared opcache.file_cache in earlier builds; it is
+	// no longer used, and is kept only so uninstall can remove it.
 	OpcacheDir = "/var/cache/php/opcache"
 	PHPLogDir  = "/var/log/php"
 	// DBLogDir must match the path literals db/server.cnf.tmpl hardcodes for
